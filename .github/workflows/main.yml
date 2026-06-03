@@ -84,8 +84,9 @@ jobs:
             echo "Applied cam_dump_req_cmd fix"
           fi
           
-          # 5. Убираем флаг -Qunused-arguments, чтобы GCC не падал при работе в качестве препроцессора
-          find . -type f -name "Makefile" -exec sed -i 's/-Qunused-arguments//g' {} +
+          # 5. Фикс для Device Tree компилятора (dtc) и Clang 14
+          # Добавляем флаг -P, чтобы препроцессор Clang не оставлял маркеры строк, которые ломают старый dtc
+          find scripts -type f -name "Makefile.*" -exec sed -i 's/-x assembler-with-cpp/-x assembler-with-cpp -P/g' {} +
           
       - name: Configure kernel
         run: |
@@ -109,7 +110,6 @@ jobs:
             HOSTCC=gcc \
             HOSTCXX=g++ \
             CC=clang \
-            CPP="aarch64-linux-gnu-gcc -E" \
             LD=ld.lld \
             AR=llvm-ar \
             NM=llvm-nm \
