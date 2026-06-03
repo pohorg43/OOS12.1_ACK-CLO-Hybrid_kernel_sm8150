@@ -154,6 +154,49 @@ jobs:
             echo "${GCC64_BIN}" >> "$GITHUB_PATH"
           } 2>&1 | tee -a build.log
 
+      - name: Apply source patches
+        run: |
+          set -euo pipefail
+          {
+            DEFS_OP="include/uapi/media/cam_defs_op.h"
+            if [ -f "$DEFS_OP" ]; then
+              if ! grep -q "struct cam_dump_req_cmd" "$DEFS_OP"; then
+                sed -i '/#endif.*__UAPI_CAM_DEFS_H__/i \
+\
+#define CAM_DUMP_REQ (CAM_COMMON_OPCODE_BASE_v2 + 0x5)\
+\
+struct cam_dump_req_cmd {\
+    int64_t  issue_req_id;\
+    int32_t  session_handle;\
+    int32_t  link_hdl;\
+    int32_t  dev_handle;\
+    int32_t  error_type;\
+    uint32_t buf_handle;\
+    int32_t  offset;\
+    uint32_t reserved;\
+};' "$DEFS_OP"
+                echo "Patched: Added struct cam_dump_req_cmd to cam_defs_op.h"
+              fi
+            fi
+
+            CAM_CTX_H="drivers/media/platform/msm/camera/cam_core/cam_context.h"
+            if [ -f "$CAM_CTX_H" ]; then
+              if ! grep -q "cam_defs.h" "$CAM_CTX_H"; then
+                sed -i '/#include "cam_req_mgr_interface.h"/i #include <uapi/media/cam_defs.h>' "$CAM_CTX_H"
+                echo "Patched: Added cam_defs.h include to cam_context.h"
+              fi
+            fi
+
+            DC_DIMING="drivers/gpu/drm/msm/oplus/oplus_dc_diming.c"
+            if [ -f "$DC_DIMING" ]; then
+              sed -i 's/^extern oplus_dc_v2_on;/extern int oplus_dc_v2_on;/' "$DC_DIMING"
+              echo "Patched: Fixed extern type in oplus_dc_diming.c"
+            fi
+
+            find drivers/soc/oplus -name "*.c" -exec sed -i 's|asm/uaccess.h|linux/uaccess.h|g' {} + 2>/dev/null || true
+            echo "Patched: Fixed uaccess.h includes"
+          } 2>&1 | tee -a build.log
+
       - name: Configure kernel
         run: |
           set -euxo pipefail
