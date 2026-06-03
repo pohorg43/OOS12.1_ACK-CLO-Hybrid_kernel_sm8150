@@ -105,43 +105,41 @@ jobs:
             test -x "${CLANG_DIR}/bin/clang"
             "${CLANG_DIR}/bin/clang" --version
           } 2>&1 | tee -a build.log
-
       - name: Fetch GCC prebuilts
         run: |
           set -euxo pipefail
           {
             mkdir -p "$(dirname "${GCC64_DIR}")" "$(dirname "${GCC32_DIR}")"
 
-            if [ ! -x "${GCC64_DIR}/bin/aarch64-linux-android-gcc" ]; then
-              rm -rf "${GCC64_DIR}"
-              git clone --depth=1 \
-                https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
-                "${GCC64_DIR}"
-            fi
+            GCC64_COMMIT="043dc0ad16a73e0e1973132d00fa6265ab4fa6ba"
+            GCC32_COMMIT="5ac02a0ba9f39591758bab4516dd0725747af0c3"
 
-            if [ ! -x "${GCC32_DIR}/bin/arm-linux-androideabi-gcc" ]; then
-              rm -rf "${GCC32_DIR}"
-              git clone --depth=1 \
-                https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
-                "${GCC32_DIR}"
-            fi
+            rm -rf "${GCC64_DIR}" "${GCC32_DIR}"
+            mkdir -p "${GCC64_DIR}" "${GCC32_DIR}"
 
-            echo "GCC64 bin snapshot:"
-            ls -la "${GCC64_DIR}/bin" | sed -n '1,40p'
-            echo "GCC32 bin snapshot:"
-            ls -la "${GCC32_DIR}/bin" | sed -n '1,40p'
+            git -C "${GCC64_DIR}" init
+            git -C "${GCC64_DIR}" remote add origin https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
+            git -C "${GCC64_DIR}" fetch --depth=1 origin "${GCC64_COMMIT}"
+            git -C "${GCC64_DIR}" checkout -q FETCH_HEAD
+
+            git -C "${GCC32_DIR}" init
+            git -C "${GCC32_DIR}" remote add origin https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9
+            git -C "${GCC32_DIR}" fetch --depth=1 origin "${GCC32_COMMIT}"
+            git -C "${GCC32_DIR}" checkout -q FETCH_HEAD
+
+            ls -la "${GCC64_DIR}/bin" | sed -n '1,20p'
+            ls -la "${GCC32_DIR}/bin" | sed -n '1,20p'
 
             test -x "${GCC64_DIR}/bin/aarch64-linux-android-gcc"
             test -x "${GCC32_DIR}/bin/arm-linux-androideabi-gcc"
 
-            # Some trees expect androidkernel- prefix. Create symlink aliases from android-.
             for t in gcc g++ cpp ar as ld nm objcopy objdump ranlib strip; do
               if [ -e "${GCC64_DIR}/bin/aarch64-linux-android-${t}" ] && [ ! -e "${GCC64_DIR}/bin/aarch64-linux-androidkernel-${t}" ]; then
                 ln -sf "aarch64-linux-android-${t}" "${GCC64_DIR}/bin/aarch64-linux-androidkernel-${t}"
               fi
             done
 
-            test -e "${GCC64_DIR}/bin/aarch64-linux-androidkernel-gcc"
+            test -x "${GCC64_DIR}/bin/aarch64-linux-androidkernel-gcc"
           } 2>&1 | tee -a build.log
 
       - name: Export toolchain env
