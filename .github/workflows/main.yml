@@ -31,20 +31,33 @@ jobs:
       GCC64_DIR: prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
       GCC32_DIR: prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9
 
+    defaults:
+      run:
+        shell: bash
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
+      - name: Init build log
+        run: |
+          : > build.log
+          echo "Build started: $(date -u)" | tee -a build.log
+          echo "Runner: $(uname -a)" | tee -a build.log
+
       - name: Install build dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y \
-            bc bison build-essential ccache flex \
-            libelf-dev libncurses-dev libssl-dev \
-            python3 rsync zip wget curl git \
-            device-tree-compiler
+          set -euxo pipefail
+          {
+            sudo apt-get update -qq
+            sudo apt-get install -y \
+              bc bison build-essential ccache flex \
+              libelf-dev libncurses-dev libssl-dev \
+              python3 rsync zip wget curl git \
+              device-tree-compiler
+          } 2>&1 | tee -a build.log
 
       - name: Cache prebuilts
         uses: actions/cache@v4
@@ -53,130 +66,155 @@ jobs:
             prebuilts-master/clang/host/linux-x86/clang-r383902
             prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
             prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9
-          key: prebuilts-clang-r383902-gcc49-v1
+          key: prebuilts-clang-r383902-gcc49-v3
           restore-keys: |
             prebuilts-clang-r383902-gcc49-
 
       - name: Fetch Android prebuilts - Clang r383902
         run: |
-          set -e
-          mkdir -p "${CLANG_DIR}"
-          if [ ! -x "${CLANG_DIR}/bin/clang" ]; then
-            echo "Downloading clang-r383902..."
-            # Пробуем несколько известных веток
-            URLS=(
-              "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902.tar.gz"
-              "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-11.0.0_r48/clang-r383902.tar.gz"
-              "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-11.0.0_r28/clang-r383902.tar.gz"
-            )
-            for URL in "${URLS[@]}"; do
-              echo "Trying $URL"
-              if wget -qO- "$URL" | tar -xz -C "${CLANG_DIR}"; then
-                echo "Extracted clang from $URL"
-                break
-              fi
-            done
-          fi
-          test -x "${CLANG_DIR}/bin/clang" || { echo "clang-r383902 not found after download"; ls -la "${CLANG_DIR}"; exit 1; }
+          set -euxo pipefail
+          {
+            mkdir -p "${CLANG_DIR}"
+            if [ ! -x "${CLANG_DIR}/bin/clang" ]; then
+              echo "Downloading clang-r383902..."
+              TMP_TGZ="/tmp/clang-r383902.tar.gz"
+              URLS=(
+                "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902.tar.gz"
+                "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-11.0.0_r48/clang-r383902.tar.gz"
+                "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-11.0.0_r28/clang-r383902.tar.gz"
+              )
+              success=0
+              for URL in "${URLS[@]}"; do
+                echo "Trying: $URL"
+                if wget -O "$TMP_TGZ" "$URL" && file "$TMP_TGZ" | grep -q "gzip compressed"; then
+                  tar -xzf "$TMP_TGZ" -C "${CLANG_DIR}"
+                  success=1
+                  break
+                fi
+              done
+              [ "$success" = "1" ]
+            fi
+
+            test -x "${CLANG_DIR}/bin/clang"
+            "${CLANG_DIR}/bin/clang" --version
+          } 2>&1 | tee -a build.log
 
       - name: Fetch Android prebuilts - GCC 4.9
         run: |
-          set -e
-          mkdir -p "$(dirname "${GCC64_DIR}")" "$(dirname "${GCC32_DIR}")"
-          
-          if [ ! -x "${GCC64_DIR}/bin/aarch64-linux-android-gcc" ]; then
-            rm -rf "${GCC64_DIR}"
-            git clone --depth=1 -b android-11.0.0_r48 \
-              https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
-              "${GCC64_DIR}"
-          fi
-          
-          if [ ! -x "${GCC32_DIR}/bin/arm-linux-androideabi-gcc" ]; then
-            rm -rf "${GCC32_DIR}"
-            git clone --depth=1 -b android-11.0.0_r48 \
-              https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
-              "${GCC32_DIR}"
-          fi
-          
-          test -x "${GCC64_DIR}/bin/aarch64-linux-android-gcc"
-          test -x "${GCC32_DIR}/bin/arm-linux-androideabi-gcc"
+          set -euxo pipefail
+          {
+            mkdir -p "$(dirname "${GCC64_DIR}")" "$(dirname "${GCC32_DIR}")"
+
+            if [ ! -x "${GCC64_DIR}/bin/aarch64-linux-android-gcc" ]; then
+              rm -rf "${GCC64_DIR}"
+              git clone --depth=1 \
+                https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+                "${GCC64_DIR}"
+            fi
+
+            if [ ! -x "${GCC32_DIR}/bin/arm-linux-androideabi-gcc" ]; then
+              rm -rf "${GCC32_DIR}"
+              git clone --depth=1 \
+                https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
+                "${GCC32_DIR}"
+            fi
+
+            test -x "${GCC64_DIR}/bin/aarch64-linux-android-gcc"
+            test -x "${GCC32_DIR}/bin/arm-linux-androideabi-gcc"
+            "${GCC64_DIR}/bin/aarch64-linux-android-gcc" --version | head -n 1
+            "${GCC32_DIR}/bin/arm-linux-androideabi-gcc" --version | head -n 1
+          } 2>&1 | tee -a build.log
 
       - name: Export toolchain env
         run: |
-          echo "${CLANG_DIR}/bin" >> $GITHUB_PATH
-          echo "${GCC64_DIR}/bin" >> $GITHUB_PATH
-          echo "${GCC32_DIR}/bin" >> $GITHUB_PATH
-          echo "CC=clang" >> $GITHUB_ENV
-          echo "LD=ld.lld" >> $GITHUB_ENV
-          echo "AR=llvm-ar" >> $GITHUB_ENV
-          echo "NM=llvm-nm" >> $GITHUB_ENV
-          echo "OBJCOPY=llvm-objcopy" >> $GITHUB_ENV
-          echo "OBJDUMP=llvm-objdump" >> $GITHUB_ENV
-          echo "STRIP=llvm-strip" >> $GITHUB_ENV
+          set -euxo pipefail
+          {
+            echo "${CLANG_DIR}/bin" >> "$GITHUB_PATH"
+            echo "${GCC64_DIR}/bin" >> "$GITHUB_PATH"
+            echo "${GCC32_DIR}/bin" >> "$GITHUB_PATH"
+
+            echo "CC=clang" >> "$GITHUB_ENV"
+            echo "LD=ld.lld" >> "$GITHUB_ENV"
+            echo "AR=llvm-ar" >> "$GITHUB_ENV"
+            echo "NM=llvm-nm" >> "$GITHUB_ENV"
+            echo "OBJCOPY=llvm-objcopy" >> "$GITHUB_ENV"
+            echo "OBJDUMP=llvm-objdump" >> "$GITHUB_ENV"
+            echo "STRIP=llvm-strip" >> "$GITHUB_ENV"
+          } 2>&1 | tee -a build.log
 
       - name: Configure kernel
         run: |
-          mkdir -p out
-          make O=out ARCH=${ARCH} ${KERNEL_DEFCONFIG}
-          make O=out ARCH=${ARCH} olddefconfig
+          set -euxo pipefail
+          {
+            mkdir -p out
+            make O=out ARCH="${ARCH}" "${KERNEL_DEFCONFIG}"
+            make O=out ARCH="${ARCH}" olddefconfig
+          } 2>&1 | tee -a build.log
 
       - name: Build kernel
         run: |
-          set -o pipefail
-          touch build.log
-          make -j"$(nproc)" \
-            O=out \
-            ARCH=${ARCH} \
-            SUBARCH=${SUBARCH} \
-            HOSTCC=gcc \
-            HOSTCXX=g++ \
-            CC=${CC} \
-            LD=${LD} \
-            AR=${AR} \
-            NM=${NM} \
-            OBJCOPY=${OBJCOPY} \
-            OBJDUMP=${OBJDUMP} \
-            STRIP=${STRIP} \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            DTC=/usr/bin/dtc \
-            DTC_EXT=/usr/bin/dtc \
-            DTC_CPP_FLAGS="-P" \
-            Image.gz dtbs modules 2>&1 | tee -a build.log
+          set -euxo pipefail
+          {
+            make -j"$(nproc)" \
+              O=out \
+              ARCH="${ARCH}" \
+              SUBARCH="${SUBARCH}" \
+              HOSTCC=gcc \
+              HOSTCXX=g++ \
+              CC=clang \
+              LD=ld.lld \
+              AR=llvm-ar \
+              NM=llvm-nm \
+              OBJCOPY=llvm-objcopy \
+              OBJDUMP=llvm-objdump \
+              STRIP=llvm-strip \
+              CLANG_TRIPLE=aarch64-linux-gnu- \
+              CROSS_COMPILE=aarch64-linux-android- \
+              CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+              DTC=/usr/bin/dtc \
+              DTC_EXT=/usr/bin/dtc \
+              DTC_CPP_FLAGS="-P" \
+              Image.gz dtbs modules
 
-          echo "=== Build output check ==="
-          ls -la out/arch/arm64/boot/ || true
+            echo "=== Build output check ==="
+            ls -la out/arch/arm64/boot/ || true
+          } 2>&1 | tee -a build.log
 
       - name: Prepare AnyKernel3 flashable zip
         if: always()
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel/anykernel.sh
+          set -euxo pipefail
+          {
+            git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+            sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel/anykernel.sh
 
-          if [ -f "out/arch/arm64/boot/Image.gz" ]; then
-            cp out/arch/arm64/boot/Image.gz anykernel/
-          elif [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
-            cp out/arch/arm64/boot/Image.gz-dtb anykernel/
-          elif [ -f "out/arch/arm64/boot/Image" ]; then
-            cp out/arch/arm64/boot/Image anykernel/
-          else
-            echo "Kernel image not found, skipping zip content"
-          fi
+            if [ -f "out/arch/arm64/boot/Image.gz" ]; then
+              cp out/arch/arm64/boot/Image.gz anykernel/
+            elif [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+              cp out/arch/arm64/boot/Image.gz-dtb anykernel/
+            elif [ -f "out/arch/arm64/boot/Image" ]; then
+              cp out/arch/arm64/boot/Image anykernel/
+            else
+              echo "Kernel image not found, zip will still be created without kernel image."
+            fi
 
-          if find out/arch/arm64/boot/dts -type f -name "*.dtb" | grep -q .; then
-            find out/arch/arm64/boot/dts -type f -name "*.dtb" | sort | xargs cat > anykernel/dtb
-          elif [ -f out/arch/arm64/boot/dtb ]; then
-            cp out/arch/arm64/boot/dtb anykernel/dtb
-          fi
+            if find out/arch/arm64/boot/dts -type f -name "*.dtb" 2>/dev/null | grep -q .; then
+              find out/arch/arm64/boot/dts -type f -name "*.dtb" | sort | xargs cat > anykernel/dtb
+            elif [ -f out/arch/arm64/boot/dtb ]; then
+              cp out/arch/arm64/boot/dtb anykernel/dtb
+            fi
+          } 2>&1 | tee -a build.log
 
       - name: Create flashable ZIP
         if: always()
         run: |
-          cd anykernel
-          ZIP_NAME="Kernel-OOS12-${DEVICE}-$(date +%Y%m%d-%H%M).zip"
-          zip -r9 "../${ZIP_NAME}" . -x "*.git*"
-          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+          set -euxo pipefail
+          {
+            cd anykernel
+            ZIP_NAME="Kernel-OOS12-${DEVICE}-$(date +%Y%m%d-%H%M).zip"
+            zip -r9 "../${ZIP_NAME}" . -x "*.git*"
+            echo "ZIP_NAME=${ZIP_NAME}" >> "$GITHUB_ENV"
+          } 2>&1 | tee -a build.log
 
       - name: Upload kernel zip artifact
         if: always()
@@ -187,7 +225,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Upload build artifacts
+      - name: Upload build outputs
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -206,5 +244,5 @@ jobs:
         with:
           name: build-log
           path: build.log
-          if-no-files-found: warn
-          retention-days: 3
+          if-no-files-found: error
+          retention-days: 7
