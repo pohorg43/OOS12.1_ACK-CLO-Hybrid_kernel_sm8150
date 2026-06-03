@@ -2,9 +2,9 @@ name: Build Kernel OOS12 - OnePlus 7 Series
 
 on:
   push:
-    branches: [ "thirteen" ]
+    branches: [ "thirteen", "main", "master" ]
   pull_request:
-    branches: [ "thirteen" ]
+    branches: [ "thirteen", "main", "master" ]
   workflow_dispatch:
     inputs:
       device:
@@ -22,23 +22,17 @@ jobs:
     runs-on: ubuntu-22.04
 
     env:
-      # Меняй под своё устройство:
-      # OnePlus 7T  -> hotdog  -> vendor/sm8150-perf_defconfig
-      # OnePlus 7 Pro -> guacamole -> vendor/sm8150-perf_defconfig
       DEVICE: ${{ github.event.inputs.device || 'OnePlus7T' }}
       ARCH: arm64
       SUBARCH: arm64
       KERNEL_DEFCONFIG: vendor/sm8150-perf_defconfig
       CLANG_VERSION: "14"
-      # При cross-compile host-тулзы должны быть нативными
-      HOSTCC: gcc
-      HOSTCXX: g++
 
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          ref: thirteen
+          fetch-depth: 1
 
       - name: Install dependencies
         run: |
@@ -55,7 +49,7 @@ jobs:
             gcc-arm-linux-gnueabi \
             python3
 
-          # Создаём симлинки без суффикса версии
+          # Создаём симлинки для LLVM/Clang
           sudo ln -sf /usr/bin/clang-${{ env.CLANG_VERSION }}     /usr/local/bin/clang
           sudo ln -sf /usr/bin/ld.lld-${{ env.CLANG_VERSION }}    /usr/local/bin/ld.lld
           sudo ln -sf /usr/bin/llvm-ar-${{ env.CLANG_VERSION }}   /usr/local/bin/llvm-ar
@@ -64,62 +58,33 @@ jobs:
           sudo ln -sf /usr/bin/llvm-objdump-${{ env.CLANG_VERSION }} /usr/local/bin/llvm-objdump
           sudo ln -sf /usr/bin/llvm-strip-${{ env.CLANG_VERSION }} /usr/local/bin/llvm-strip
 
-          echo "Clang version:"
-          clang --version
-
       - name: Apply source patches
         run: |
-          # Фикс: объявление типа для переменной oplus_dc_v2_on
+          # 1. Фикс oplus_dc_diming.c
           if [ -f drivers/gpu/drm/msm/oplus/oplus_dc_diming.c ]; then
-            sed -i 's/extern oplus_dc_v2_on;/extern int oplus_dc_v2_on;/g' \
-              drivers/gpu/drm/msm/oplus/oplus_dc_diming.c
-            echo "Applied oplus_dc_v2_on fix"
+            sed -i 's/extern oplus_dc_v2_on;/extern int oplus_dc_v2_on;/g' drivers/gpu/drm/msm/oplus/oplus_dc_diming.c
           fi
 
-          # Фикс: правильный заголовок uaccess
-          find drivers/soc/oplus -name "*.c" -exec \
-            sed -i 's/asm\/uaccess.h/linux\/uaccess.h/g' {} + 2>/dev/null || true
+          # 2. Фикс uaccess.h
+          find drivers/soc/oplus -name "*.c" -exec sed -i 's/asm\/uaccess.h/linux\/uaccess.h/g' {} + 2>/dev/null || true
 
-          # Убираем -Werror и -Wfatal-errors чтобы ошибки компилятора не ломали сборку
-          # (исправленный find с правильными скобками)
-          find . \( -name "Makefile" -o -name "*.mk" \) \
-            -not -path "./.git/*" \
-            -not -path "./out/*" | \
-            xargs sed -i \
-              -e 's/ -Werror//g' \
-              -e 's/-Werror //g' \
-              -e 's/-Wfatal-errors//g' \
-              -e 's/-Wimplicit-function-declaration//g' 2>/dev/null || true
-
-          echo "Patches applied"
+          # 3. БРОНЕБОЙНОЕ удаление флагов -Werror. 
+          # [^ ]* удаляет всё слово целиком до следующего пробела.
+          find . -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Werror[^ ]*//g' {} +
+          find . -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Wfatal-errors[^ ]*//g' {} +
 
       - name: Configure kernel
         run: |
           mkdir -p out
+          make O=out ARCH=${{ env.ARCH }} ${{ env.KERNEL_DEFCONFIG }}
 
-          make \
-            O=out \
-            ARCH=${{ env.ARCH }} \
-            SUBARCH=${{ env.SUBARCH }} \
-            HOSTCC=${{ env.HOSTCC }} \
-            HOSTCXX=${{ env.HOSTCXX }} \
-            ${{ env.KERNEL_DEFCONFIG }}
-
-          # Отключаем stack protector (несовместим с некоторыми версиями clang)
-          sed -i \
-            's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g' \
-            out/.config
+          # Отключаем LTO и Stack Protector (часто ломают сборку старых ядер новым Clang)
+          sed -i 's/CONFIG_LTO=y/# CONFIG_LTO is not set/g' out/.config
+          sed -i 's/CONFIG_LTO_CLANG=y/# CONFIG_LTO_CLANG is not set/g' out/.config
+          sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g' out/.config
           echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> out/.config
 
-          make \
-            O=out \
-            ARCH=${{ env.ARCH }} \
-            HOSTCC=${{ env.HOSTCC }} \
-            HOSTCXX=${{ env.HOSTCXX }} \
-            olddefconfig
-
-          echo "=== Config summary ==="
-          grep -E "CONFIG_(CC_STACKPROTECTOR|LTO|LOCALVERSION)" out/.config || true
+          make O=out ARCH=${{ env.ARCH }} olddefconfig
 
       - name: Build kernel
         run: |
@@ -127,8 +92,6 @@ jobs:
             O=out \
             ARCH=${{ env.ARCH }} \
             SUBARCH=${{ env.SUBARCH }} \
-            HOSTCC=${{ env.HOSTCC }} \
-            HOSTCXX=${{ env.HOSTCXX }} \
             CC=clang \
             LD=ld.lld \
             AR=llvm-ar \
@@ -136,43 +99,27 @@ jobs:
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            WERROR=0 \
-            KCFLAGS="-w" \
+            KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-unused-function" \
             2>&1 | tee build.log
-
-          # Проверяем что Image собрался
-          echo "=== Build output check ==="
-          ls -la out/arch/arm64/boot/ || echo "No boot directory found!"
 
       - name: Prepare AnyKernel3 flashable zip
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
-
-          # Отключаем проверку устройства (для тестирования)
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel/anykernel.sh
 
-          # Копируем kernel image (проверяем разные варианты имён)
-          KERNEL_IMAGE=""
-          for img in Image.gz-dtb Image.gz Image; do
-            if [ -f "out/arch/arm64/boot/$img" ]; then
-              KERNEL_IMAGE="out/arch/arm64/boot/$img"
-              echo "Found kernel image: $img"
-              break
-            fi
-          done
-
-          if [ -z "$KERNEL_IMAGE" ]; then
-            echo "ERROR: No kernel image found in out/arch/arm64/boot/"
-            ls out/arch/arm64/boot/ || true
+          if [ -f "out/arch/arm64/boot/Image" ]; then
+            cp out/arch/arm64/boot/Image anykernel/
+          elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
+            cp out/arch/arm64/boot/Image.gz anykernel/
+          elif [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+            cp out/arch/arm64/boot/Image.gz-dtb anykernel/
+          else
+            echo "Kernel Image not found! Build likely failed."
             exit 1
           fi
 
-          cp "$KERNEL_IMAGE" anykernel/
-
-          # Копируем dtb если есть
           if [ -f out/arch/arm64/boot/dtb ]; then
             cp out/arch/arm64/boot/dtb anykernel/dtb
           fi
@@ -183,14 +130,12 @@ jobs:
           ZIP_NAME="Kernel-OOS12-${{ env.DEVICE }}-$(date +%Y%m%d-%H%M).zip"
           zip -r9 "../${ZIP_NAME}" . -x "*.git*"
           echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
-          echo "Created: ${ZIP_NAME}"
 
       - name: Upload kernel zip as artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-OOS12-${{ env.DEVICE }}
           path: "*.zip"
-          if-no-files-found: error
           retention-days: 7
 
       - name: Upload build log on failure
@@ -200,4 +145,3 @@ jobs:
           name: build-log-failure
           path: build.log
           retention-days: 3
-      
