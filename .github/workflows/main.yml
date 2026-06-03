@@ -27,7 +27,6 @@ jobs:
       ARCH: arm64
       SUBARCH: arm64
       KERNEL_DEFCONFIG: vendor/sm8150-perf_defconfig
-
       CLANG_DIR: prebuilts-master/clang/host/linux-x86/clang-r383902
       GCC64_DIR: prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
 
@@ -52,7 +51,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           {
             sudo apt-get update -qq
             sudo apt-get install -y \
@@ -61,7 +60,7 @@ jobs:
               python3 rsync zip wget curl git \
               device-tree-compiler \
               gcc-arm-linux-gnueabi
-            /usr/bin/dtc --version || true
+            /usr/bin/dtc --version
           } 2>&1 | tee -a build.log
 
       - name: Cache prebuilts
@@ -70,13 +69,13 @@ jobs:
           path: |
             prebuilts-master/clang/host/linux-x86/clang-r383902
             prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
-          key: prebuilts-clang-r383902-gcc64-v1
+          key: prebuilts-clang-r383902-gcc64-v2
           restore-keys: |
             prebuilts-clang-r383902-gcc64-
 
       - name: Fetch Clang r383902
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           {
             mkdir -p "${CLANG_DIR}"
             if [ ! -x "${CLANG_DIR}/bin/clang" ]; then
@@ -90,7 +89,7 @@ jobs:
               ok=0
               for url in "${URLS[@]}"; do
                 echo "Trying: $url"
-                if wget -O "$TMP_TGZ" "$url" && file "$TMP_TGZ" | grep -q "gzip compressed"; then
+                if wget -q -O "$TMP_TGZ" "$url" && file "$TMP_TGZ" | grep -q "gzip compressed"; then
                   tar -xzf "$TMP_TGZ" -C "${CLANG_DIR}"
                   ok=1
                   break
@@ -103,13 +102,12 @@ jobs:
             "${CLANG_DIR}/bin/clang" --version
           } 2>&1 | tee -a build.log
 
-      - name: Fetch AArch64 prebuilt binutils/gcc tree
+      - name: Fetch AArch64 prebuilts
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           {
-            mkdir -p "$(dirname "${GCC64_DIR}")"
-
             GCC64_COMMIT="043dc0ad16a73e0e1973132d00fa6265ab4fa6ba"
+            mkdir -p "$(dirname "${GCC64_DIR}")"
             rm -rf "${GCC64_DIR}"
             mkdir -p "${GCC64_DIR}"
 
@@ -118,11 +116,9 @@ jobs:
             git -C "${GCC64_DIR}" fetch --depth=1 origin "${GCC64_COMMIT}"
             git -C "${GCC64_DIR}" checkout -q FETCH_HEAD
 
-            ls -la "${GCC64_DIR}/bin" | sed -n '1,40p'
-
+            test -d "${GCC64_DIR}/bin"
             test -x "${GCC64_DIR}/bin/aarch64-linux-android-nm"
             test -x "${GCC64_DIR}/bin/aarch64-linux-android-objcopy"
-            test -x "${GCC64_DIR}/bin/aarch64-linux-android-ld" || test -x "${GCC64_DIR}/bin/aarch64-linux-android-ld.bfd"
 
             for f in "${GCC64_DIR}/bin/aarch64-linux-android-"*; do
               b="$(basename "$f")"
@@ -133,49 +129,77 @@ jobs:
             test -x "${GCC64_DIR}/bin/aarch64-linux-androidkernel-nm"
           } 2>&1 | tee -a build.log
 
-      - name: Export toolchain env
+      - name: Export toolchain paths
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           {
-            echo "${CLANG_DIR}/bin" >> "$GITHUB_PATH"
-            echo "${GCC64_DIR}/bin" >> "$GITHUB_PATH"
+            CLANG_BIN="$(pwd)/${CLANG_DIR}/bin"
+            GCC64_BIN="$(pwd)/${GCC64_DIR}/bin"
 
-            echo "CC=clang" >> "$GITHUB_ENV"
-            echo "LD=ld.lld" >> "$GITHUB_ENV"
-            echo "AR=llvm-ar" >> "$GITHUB_ENV"
-            echo "NM=llvm-nm" >> "$GITHUB_ENV"
-            echo "OBJCOPY=llvm-objcopy" >> "$GITHUB_ENV"
-            echo "OBJDUMP=llvm-objdump" >> "$GITHUB_ENV"
-            echo "STRIP=llvm-strip" >> "$GITHUB_ENV"
+            echo "CLANG_BIN=${CLANG_BIN}" >> "$GITHUB_ENV"
+            echo "GCC64_BIN=${GCC64_BIN}" >> "$GITHUB_ENV"
+
+            echo "${CLANG_BIN}" >> "$GITHUB_PATH"
+            echo "${GCC64_BIN}" >> "$GITHUB_PATH"
           } 2>&1 | tee -a build.log
 
       - name: Configure kernel
         run: |
           set -euxo pipefail
           {
+            export PATH="${CLANG_BIN}:${GCC64_BIN}:$PATH"
+
             mkdir -p out
-            make O=out ARCH="${ARCH}" "${KERNEL_DEFCONFIG}"
-            make O=out ARCH="${ARCH}" olddefconfig
+            make O=out \
+              ARCH="${ARCH}" \
+              LLVM=1 \
+              LLVM_IAS=1 \
+              CC="${CLANG_BIN}/clang" \
+              LD="${CLANG_BIN}/ld.lld" \
+              CLANG_TRIPLE=aarch64-linux-gnu- \
+              CROSS_COMPILE=aarch64-linux-androidkernel- \
+              CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+              "${KERNEL_DEFCONFIG}"
+
+            make O=out \
+              ARCH="${ARCH}" \
+              LLVM=1 \
+              LLVM_IAS=1 \
+              CC="${CLANG_BIN}/clang" \
+              LD="${CLANG_BIN}/ld.lld" \
+              CLANG_TRIPLE=aarch64-linux-gnu- \
+              CROSS_COMPILE=aarch64-linux-androidkernel- \
+              CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+              olddefconfig
           } 2>&1 | tee -a build.log
 
       - name: Build kernel
         run: |
           set -euxo pipefail
           {
+            export PATH="${CLANG_BIN}:${GCC64_BIN}:$PATH"
+
+            test -x "${CLANG_BIN}/clang"
+            test -x "${CLANG_BIN}/ld.lld"
+            test -x "${CLANG_BIN}/llvm-objdump"
+
             make -j"$(nproc)" \
               O=out \
               ARCH="${ARCH}" \
               SUBARCH="${SUBARCH}" \
-              LLVM=1 LLVM_IAS=1 \
+              LLVM=1 \
+              LLVM_IAS=1 \
               HOSTCC=gcc \
               HOSTCXX=g++ \
-              CC=clang \
-              LD=ld.lld \
-              AR=llvm-ar \
-              NM=llvm-nm \
-              OBJCOPY=llvm-objcopy \
-              OBJDUMP=llvm-objdump \
-              STRIP=llvm-strip \
+              CC="${CLANG_BIN}/clang" \
+              LD="${CLANG_BIN}/ld.lld" \
+              AR="${CLANG_BIN}/llvm-ar" \
+              NM="${CLANG_BIN}/llvm-nm" \
+              OBJCOPY="${CLANG_BIN}/llvm-objcopy" \
+              OBJDUMP="${CLANG_BIN}/llvm-objdump" \
+              STRIP="${CLANG_BIN}/llvm-strip" \
+              READELF="${CLANG_BIN}/llvm-readelf" \
+              HOSTAR="${CLANG_BIN}/llvm-ar" \
               CLANG_TRIPLE=aarch64-linux-gnu- \
               CROSS_COMPILE=aarch64-linux-androidkernel- \
               CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
@@ -184,14 +208,13 @@ jobs:
               DTC_CPP_FLAGS="-P" \
               Image.gz dtbs modules
 
-            echo "=== Boot output ==="
             ls -la out/arch/arm64/boot/ || true
           } 2>&1 | tee -a build.log
 
       - name: Validate output
         if: success()
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           {
             if [ -f out/arch/arm64/boot/Image.gz ] || [ -f out/arch/arm64/boot/Image ] || [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
               echo "Kernel image found"
@@ -204,7 +227,7 @@ jobs:
       - name: Prepare AnyKernel3
         if: success()
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           {
             git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
             sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel/anykernel.sh
@@ -227,7 +250,7 @@ jobs:
       - name: Create flashable ZIP
         if: success()
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           {
             cd anykernel
             ZIP_NAME="Kernel-OOS12-${DEVICE}-$(date +%Y%m%d-%H%M).zip"
