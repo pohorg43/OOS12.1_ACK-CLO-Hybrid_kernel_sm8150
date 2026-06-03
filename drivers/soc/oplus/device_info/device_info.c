@@ -23,7 +23,7 @@
 #include <linux/platform_device.h>
 #include "../../../../fs/proc/internal.h"
 #include <linux/gpio.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/delay.h>
 #include <linux/list.h>
 #include <linux/iio/consumer.h>
