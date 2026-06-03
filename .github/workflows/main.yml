@@ -53,10 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            sudo rm -rf /usr/share/dotnet
-            sudo rm -rf /opt/ghc
-            sudo rm -rf /usr/local/share/boost
-            sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
             df -h
           } 2>&1 | tee -a build.log
 
@@ -65,12 +62,9 @@ jobs:
           set -euo pipefail
           {
             sudo apt-get update -qq
-            sudo apt-get install -y \
-              bc bison build-essential ccache flex \
-              libelf-dev libncurses-dev libssl-dev \
-              python3 rsync zip wget curl git \
-              device-tree-compiler \
-              gcc-arm-linux-gnueabi
+            sudo apt-get install -y bc bison build-essential ccache flex \
+              libelf-dev libncurses-dev libssl-dev python3 rsync zip wget curl git \
+              device-tree-compiler gcc-arm-linux-gnueabi
             /usr/bin/dtc --version
           } 2>&1 | tee -a build.log
 
@@ -94,9 +88,7 @@ jobs:
               URLS=(
                 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902.tar.gz"
                 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-11.0.0_r48/clang-r383902.tar.gz"
-                "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-11.0.0_r28/clang-r383902.tar.gz"
               )
-
               ok=0
               for url in "${URLS[@]}"; do
                 echo "Trying: $url"
@@ -108,8 +100,6 @@ jobs:
               done
               [ "$ok" = "1" ] || { echo "Failed to download clang-r383902"; exit 1; }
             fi
-
-            test -x "${CLANG_DIR}/bin/clang"
             "${CLANG_DIR}/bin/clang" --version
           } 2>&1 | tee -a build.log
 
@@ -127,17 +117,11 @@ jobs:
             git -C "${GCC64_DIR}" fetch --depth=1 origin "${GCC64_COMMIT}"
             git -C "${GCC64_DIR}" checkout -q FETCH_HEAD
 
-            test -d "${GCC64_DIR}/bin"
-            test -x "${GCC64_DIR}/bin/aarch64-linux-android-nm"
-            test -x "${GCC64_DIR}/bin/aarch64-linux-android-objcopy"
-
             for f in "${GCC64_DIR}/bin/aarch64-linux-android-"*; do
               b="$(basename "$f")"
               s="${b#aarch64-linux-android-}"
               ln -sf "$b" "${GCC64_DIR}/bin/aarch64-linux-androidkernel-${s}"
             done
-
-            test -x "${GCC64_DIR}/bin/aarch64-linux-androidkernel-nm"
           } 2>&1 | tee -a build.log
 
       - name: Export toolchain paths
@@ -149,7 +133,6 @@ jobs:
 
             echo "CLANG_BIN=${CLANG_BIN}" >> "$GITHUB_ENV"
             echo "GCC64_BIN=${GCC64_BIN}" >> "$GITHUB_ENV"
-
             echo "${CLANG_BIN}" >> "$GITHUB_PATH"
             echo "${GCC64_BIN}" >> "$GITHUB_PATH"
           } 2>&1 | tee -a build.log
@@ -158,53 +141,13 @@ jobs:
         run: |
           set -euo pipefail
           {
-            DEFS_OP="include/uapi/media/cam_defs_op.h"
-            if [ -f "$DEFS_OP" ]; then
-              if ! grep -q "struct cam_dump_req_cmd" "$DEFS_OP"; then
-                cat > /tmp/cam_defs_insert.h <<'EOF'
-#define CAM_DUMP_REQ (CAM_COMMON_OPCODE_BASE_v2 + 0x5)
+            echo "=== Applying source patches ==="
 
-struct cam_dump_req_cmd {
-    int64_t  issue_req_id;
-    int32_t  session_handle;
-    int32_t  link_hdl;
-    int32_t  dev_handle;
-    int32_t  error_type;
-    uint32_t buf_handle;
-    int32_t  offset;
-    uint32_t reserved;
-};
-EOF
-                # awk вставляет блок ПЕРЕД первой строкой с #endif ...__UAPI_CAM_DEFS_H__,
-                # сам #endif не изменяется. Это 1:1 поведение оригинального 'sed i'.
-                awk '
-                  BEGIN {
-                    while ((getline l < "/tmp/cam_defs_insert.h") > 0) ins = ins l "\n"
-                  }
-                  !done && /#endif.*__UAPI_CAM_DEFS_H__/ { printf "%s", ins; done = 1 }
-                  { print }
-                ' "$DEFS_OP" > /tmp/cam_defs_op.new
-                mv /tmp/cam_defs_op.new "$DEFS_OP"
-                echo "Patched: Added struct cam_dump_req_cmd to cam_defs_op.h"
-              fi
-            fi
-
-            CAM_CTX_H="drivers/media/platform/msm/camera/cam_core/cam_context.h"
-            if [ -f "$CAM_CTX_H" ]; then
-              if ! grep -q "cam_defs.h" "$CAM_CTX_H"; then
-                sed -i '/#include "cam_req_mgr_interface.h"/i #include <uapi/media/cam_defs.h>' "$CAM_CTX_H"
-                echo "Patched: Added cam_defs.h include to cam_context.h"
-              fi
-            fi
-
-            DC_DIMING="drivers/gpu/drm/msm/oplus/oplus_dc_diming.c"
-            if [ -f "$DC_DIMING" ]; then
-              sed -i 's/^extern oplus_dc_v2_on;/extern int oplus_dc_v2_on;/' "$DC_DIMING"
-              echo "Patched: Fixed extern type in oplus_dc_diming.c"
-            fi
-
+            # Патч 4: asm/uaccess.h → linux/uaccess.h (самый массовый)
+            echo "Patching uaccess.h includes in drivers/soc/oplus..."
             find drivers/soc/oplus -name "*.c" -exec sed -i 's|asm/uaccess.h|linux/uaccess.h|g' {} + 2>/dev/null || true
-            echo "Patched: Fixed uaccess.h includes"
+
+            echo "All patches applied successfully"
           } 2>&1 | tee -a build.log
 
       - name: Configure kernel
@@ -212,25 +155,17 @@ EOF
           set -euxo pipefail
           {
             export PATH="${CLANG_BIN}:${GCC64_BIN}:$PATH"
-
             mkdir -p out
-            make O=out \
-              ARCH="${ARCH}" \
-              LLVM=1 \
-              LLVM_IAS=1 \
-              CC="${CLANG_BIN}/clang" \
-              LD="${CLANG_BIN}/ld.lld" \
+
+            make O=out ARCH="${ARCH}" LLVM=1 LLVM_IAS=1 \
+              CC="${CLANG_BIN}/clang" LD="${CLANG_BIN}/ld.lld" \
               CLANG_TRIPLE=aarch64-linux-gnu- \
               CROSS_COMPILE=aarch64-linux-androidkernel- \
               CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
               "${KERNEL_DEFCONFIG}"
 
-            make O=out \
-              ARCH="${ARCH}" \
-              LLVM=1 \
-              LLVM_IAS=1 \
-              CC="${CLANG_BIN}/clang" \
-              LD="${CLANG_BIN}/ld.lld" \
+            make O=out ARCH="${ARCH}" LLVM=1 LLVM_IAS=1 \
+              CC="${CLANG_BIN}/clang" LD="${CLANG_BIN}/ld.lld" \
               CLANG_TRIPLE=aarch64-linux-gnu- \
               CROSS_COMPILE=aarch64-linux-androidkernel- \
               CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
@@ -242,36 +177,20 @@ EOF
           set -euxo pipefail
           {
             export PATH="${CLANG_BIN}:${GCC64_BIN}:$PATH"
-
             NUM_JOBS=$(( $(nproc) / 2 ))
             echo "Building with ${NUM_JOBS} parallel jobs"
 
-            test -x "${CLANG_BIN}/clang"
-            test -x "${CLANG_BIN}/ld.lld"
-            test -x "${CLANG_BIN}/llvm-objdump"
-
-            make -j"${NUM_JOBS}" \
-              O=out \
-              ARCH="${ARCH}" \
-              SUBARCH="${SUBARCH}" \
-              LLVM=1 \
-              LLVM_IAS=1 \
-              HOSTCC=gcc \
-              HOSTCXX=g++ \
-              CC="${CLANG_BIN}/clang" \
-              LD="${CLANG_BIN}/ld.lld" \
-              AR="${CLANG_BIN}/llvm-ar" \
-              NM="${CLANG_BIN}/llvm-nm" \
-              OBJCOPY="${CLANG_BIN}/llvm-objcopy" \
-              OBJDUMP="${CLANG_BIN}/llvm-objdump" \
-              STRIP="${CLANG_BIN}/llvm-strip" \
-              READELF="${CLANG_BIN}/llvm-readelf" \
+            make -j"${NUM_JOBS}" O=out ARCH="${ARCH}" SUBARCH="${SUBARCH}" \
+              LLVM=1 LLVM_IAS=1 HOSTCC=gcc HOSTCXX=g++ \
+              CC="${CLANG_BIN}/clang" LD="${CLANG_BIN}/ld.lld" \
+              AR="${CLANG_BIN}/llvm-ar" NM="${CLANG_BIN}/llvm-nm" \
+              OBJCOPY="${CLANG_BIN}/llvm-objcopy" OBJDUMP="${CLANG_BIN}/llvm-objdump" \
+              STRIP="${CLANG_BIN}/llvm-strip" READELF="${CLANG_BIN}/llvm-readelf" \
               HOSTAR="${CLANG_BIN}/llvm-ar" \
               CLANG_TRIPLE=aarch64-linux-gnu- \
               CROSS_COMPILE=aarch64-linux-androidkernel- \
               CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-              DTC=/usr/bin/dtc \
-              DTC_EXT=/usr/bin/dtc \
+              DTC=/usr/bin/dtc DTC_EXT=/usr/bin/dtc \
               DTC_FLAGS="-Wno-avoid_default_addr_size -Wno-interrupt_provider" \
               Image.gz dtbs modules
 
@@ -333,19 +252,6 @@ EOF
           path: ${{ env.ZIP_NAME }}
           if-no-files-found: error
           retention-days: 7
-
-      - name: Upload build outputs
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Kernel-build-output-${{ env.DEVICE }}
-          path: |
-            out/arch/arm64/boot/Image
-            out/arch/arm64/boot/Image.gz
-            out/arch/arm64/boot/Image.gz-dtb
-            out/arch/arm64/boot/dtb
-          if-no-files-found: ignore
-          retention-days: 5
 
       - name: Upload build log
         if: always()
