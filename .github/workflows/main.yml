@@ -27,6 +27,7 @@ jobs:
       ARCH: arm64
       SUBARCH: arm64
       KERNEL_DEFCONFIG: vendor/sm8150-perf_defconfig
+
       CLANG_DIR: prebuilts-master/clang/host/linux-x86/clang-r383902
       GCC64_DIR: prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
       GCC32_DIR: prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9
@@ -44,10 +45,13 @@ jobs:
       - name: Init build log
         run: |
           : > build.log
-          echo "Build started: $(date -u)" | tee -a build.log
-          echo "Runner: $(uname -a)" | tee -a build.log
+          {
+            echo "Build started: $(date -u)"
+            echo "Runner: $(uname -a)"
+            echo "Workspace: $PWD"
+          } | tee -a build.log
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           set -euxo pipefail
           {
@@ -57,6 +61,7 @@ jobs:
               libelf-dev libncurses-dev libssl-dev \
               python3 rsync zip wget curl git \
               device-tree-compiler
+            /usr/bin/dtc --version || true
           } 2>&1 | tee -a build.log
 
       - name: Cache prebuilts
@@ -66,40 +71,42 @@ jobs:
             prebuilts-master/clang/host/linux-x86/clang-r383902
             prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
             prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9
-          key: prebuilts-clang-r383902-gcc49-v3
+          key: prebuilts-clang-r383902-gcc49-v4
           restore-keys: |
             prebuilts-clang-r383902-gcc49-
 
-      - name: Fetch Android prebuilts - Clang r383902
+      - name: Fetch Clang r383902
         run: |
           set -euxo pipefail
           {
             mkdir -p "${CLANG_DIR}"
+
             if [ ! -x "${CLANG_DIR}/bin/clang" ]; then
-              echo "Downloading clang-r383902..."
               TMP_TGZ="/tmp/clang-r383902.tar.gz"
               URLS=(
                 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902.tar.gz"
                 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-11.0.0_r48/clang-r383902.tar.gz"
                 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-11.0.0_r28/clang-r383902.tar.gz"
               )
-              success=0
-              for URL in "${URLS[@]}"; do
-                echo "Trying: $URL"
-                if wget -O "$TMP_TGZ" "$URL" && file "$TMP_TGZ" | grep -q "gzip compressed"; then
+
+              ok=0
+              for url in "${URLS[@]}"; do
+                echo "Trying: $url"
+                if wget -O "$TMP_TGZ" "$url" && file "$TMP_TGZ" | grep -q "gzip compressed"; then
                   tar -xzf "$TMP_TGZ" -C "${CLANG_DIR}"
-                  success=1
+                  ok=1
                   break
                 fi
               done
-              [ "$success" = "1" ]
+
+              [ "$ok" = "1" ] || { echo "Failed to download clang-r383902"; exit 1; }
             fi
 
             test -x "${CLANG_DIR}/bin/clang"
             "${CLANG_DIR}/bin/clang" --version
           } 2>&1 | tee -a build.log
 
-      - name: Fetch Android prebuilts - GCC 4.9
+      - name: Fetch GCC prebuilts
         run: |
           set -euxo pipefail
           {
@@ -119,11 +126,22 @@ jobs:
                 "${GCC32_DIR}"
             fi
 
+            echo "GCC64 bin snapshot:"
+            ls -la "${GCC64_DIR}/bin" | sed -n '1,40p'
+            echo "GCC32 bin snapshot:"
+            ls -la "${GCC32_DIR}/bin" | sed -n '1,40p'
+
             test -x "${GCC64_DIR}/bin/aarch64-linux-android-gcc"
             test -x "${GCC32_DIR}/bin/arm-linux-androideabi-gcc"
 
-            "${GCC64_DIR}/bin/aarch64-linux-android-gcc" --version || true
-            "${GCC32_DIR}/bin/arm-linux-androideabi-gcc" --version || true
+            # Some trees expect androidkernel- prefix. Create symlink aliases from android-.
+            for t in gcc g++ cpp ar as ld nm objcopy objdump ranlib strip; do
+              if [ -e "${GCC64_DIR}/bin/aarch64-linux-android-${t}" ] && [ ! -e "${GCC64_DIR}/bin/aarch64-linux-androidkernel-${t}" ]; then
+                ln -sf "aarch64-linux-android-${t}" "${GCC64_DIR}/bin/aarch64-linux-androidkernel-${t}"
+              fi
+            done
+
+            test -e "${GCC64_DIR}/bin/aarch64-linux-androidkernel-gcc"
           } 2>&1 | tee -a build.log
 
       - name: Export toolchain env
@@ -170,15 +188,28 @@ jobs:
               OBJDUMP=llvm-objdump \
               STRIP=llvm-strip \
               CLANG_TRIPLE=aarch64-linux-gnu- \
-              CROSS_COMPILE=aarch64-linux-android- \
+              CROSS_COMPILE=aarch64-linux-androidkernel- \
               CROSS_COMPILE_ARM32=arm-linux-androideabi- \
               DTC=/usr/bin/dtc \
               DTC_EXT=/usr/bin/dtc \
               DTC_CPP_FLAGS="-P" \
               Image.gz dtbs modules
 
-            echo "=== Build output check ==="
+            echo "=== Boot output ==="
             ls -la out/arch/arm64/boot/ || true
+          } 2>&1 | tee -a build.log
+
+      - name: Validate build outputs
+        if: success()
+        run: |
+          set -euxo pipefail
+          {
+            if [ -f out/arch/arm64/boot/Image.gz ] || [ -f out/arch/arm64/boot/Image ] || [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+              echo "Kernel image found."
+            else
+              echo "Kernel image not found."
+              exit 1
+            fi
           } 2>&1 | tee -a build.log
 
       - name: Prepare AnyKernel3 flashable zip
@@ -189,14 +220,12 @@ jobs:
             git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
             sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel/anykernel.sh
 
-            if [ -f "out/arch/arm64/boot/Image.gz" ]; then
+            if [ -f out/arch/arm64/boot/Image.gz ]; then
               cp out/arch/arm64/boot/Image.gz anykernel/
-            elif [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+            elif [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
               cp out/arch/arm64/boot/Image.gz-dtb anykernel/
-            elif [ -f "out/arch/arm64/boot/Image" ]; then
-              cp out/arch/arm64/boot/Image anykernel/
             else
-              echo "Kernel image not found, zip will still be created without kernel image."
+              cp out/arch/arm64/boot/Image anykernel/
             fi
 
             if find out/arch/arm64/boot/dts -type f -name "*.dtb" 2>/dev/null | grep -q .; then
@@ -218,16 +247,16 @@ jobs:
           } 2>&1 | tee -a build.log
 
       - name: Upload kernel zip artifact
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-OOS12-${{ env.DEVICE }}
           path: ${{ env.ZIP_NAME }}
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
 
       - name: Upload build outputs
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-build-output-${{ env.DEVICE }}
