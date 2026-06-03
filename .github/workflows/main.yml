@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       device:
-        description: 'Target device'
+        description: "Target device label for artifact name"
         required: true
-        default: 'OnePlus7T'
+        default: "OnePlus7T"
         type: choice
         options:
           - OnePlus7T
@@ -20,13 +20,16 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 120
 
     env:
       DEVICE: ${{ github.event.inputs.device || 'OnePlus7T' }}
       ARCH: arm64
       SUBARCH: arm64
       KERNEL_DEFCONFIG: vendor/sm8150-perf_defconfig
-      CLANG_VERSION: "14"
+      CLANG_PREBUILT_DIR: prebuilts-master/clang/host/linux-x86/clang-r383902/bin
+      GCC64_DIR: prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin
+      GCC32_DIR: prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/bin
 
     steps:
       - name: Checkout source
@@ -34,134 +37,134 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y \
-            bc build-essential flex bison \
-            libssl-dev libelf-dev libncurses-dev \
-            clang-${{ env.CLANG_VERSION }} \
-            lld-${{ env.CLANG_VERSION }} \
-            llvm-${{ env.CLANG_VERSION }} \
-            zip \
-            gcc-aarch64-linux-gnu \
-            binutils-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabi \
-            python3 \
+            bc bison build-essential ccache flex \
+            libelf-dev libncurses-dev libssl-dev \
+            python3 rsync zip wget curl git \
             device-tree-compiler
 
-          # Создаём симлинки для LLVM/Clang
-          sudo ln -sf /usr/bin/clang-${{ env.CLANG_VERSION }}     /usr/local/bin/clang
-          sudo ln -sf /usr/bin/ld.lld-${{ env.CLANG_VERSION }}    /usr/local/bin/ld.lld
-          sudo ln -sf /usr/bin/llvm-ar-${{ env.CLANG_VERSION }}   /usr/local/bin/llvm-ar
-          sudo ln -sf /usr/bin/llvm-nm-${{ env.CLANG_VERSION }}   /usr/local/bin/llvm-nm
-          sudo ln -sf /usr/bin/llvm-objcopy-${{ env.CLANG_VERSION }} /usr/local/bin/llvm-objcopy
-          sudo ln -sf /usr/bin/llvm-objdump-${{ env.CLANG_VERSION }} /usr/local/bin/llvm-objdump
-          sudo ln -sf /usr/bin/llvm-strip-${{ env.CLANG_VERSION }} /usr/local/bin/llvm-strip
-          
-      - name: Apply source patches
+      - name: Fetch Android prebuilts (clang + gcc)
         run: |
-          # 1. Фикс oplus_dc_diming.c
-          if [ -f drivers/gpu/drm/msm/oplus/oplus_dc_diming.c ]; then
-            sed -i 's/extern oplus_dc_v2_on;/extern int oplus_dc_v2_on;/g' drivers/gpu/drm/msm/oplus/oplus_dc_diming.c
-          fi
+          mkdir -p prebuilts-master/clang/host/linux-x86
+          mkdir -p prebuilts/gcc/linux-x86/aarch64
+          mkdir -p prebuilts/gcc/linux-x86/arm
 
-          # 2. Фикс uaccess.h
-          find drivers/soc/oplus -name "*.c" -exec sed -i 's/asm\/uaccess.h/linux\/uaccess.h/g' {} + 2>/dev/null || true
+          # Clang r383902 (matches build.config.common expectation)
+          git clone --depth=1 \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            prebuilts-master/clang/host/linux-x86
 
-          # 3. БЕЗОПАСНОЕ удаление флагов -Werror. 
-          find . -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Werror[a-zA-Z0-9_=-]*//g' {} +
-          find . -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Wfatal-errors[a-zA-Z0-9_=-]*//g' {} +
+          # AArch64 GCC 4.9 prebuilt (matches build.config.aarch64 expectation)
+          git clone --depth=1 \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+            prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
 
-          # 4. Фикс драйвера камеры (совет Клода + правильный инклуд)
-          CAM_CTX_H="drivers/media/platform/msm/camera/cam_core/cam_context.h"
-          CAM_CTX_C="drivers/media/platform/msm/camera/cam_core/cam_context_utils.c"
-          if [ -f "$CAM_CTX_H" ]; then
-            # Добавляем forward declaration ВНУТРИ include guard (после #define __CAM_CONTEXT_H__)
-            if ! grep -q "struct cam_dump_req_cmd;" "$CAM_CTX_H"; then
-              sed -i '/^#define.*CAM_CONTEXT.*H/a struct cam_dump_req_cmd;' "$CAM_CTX_H"
-            fi
-            
-            # В .c файле нам нужно полное определение структуры, подключаем правильный заголовок
-            if ! grep -q "cam_req_mgr_interface.h" "$CAM_CTX_C"; then
-              sed -i '1i #include "../cam_req_mgr/cam_req_mgr_interface.h"' "$CAM_CTX_C"
-            fi
-            echo "Applied camera driver fixes"
-          fi
-          
+          # ARM32 GCC 4.9 prebuilt for CROSS_COMPILE_ARM32
+          git clone --depth=1 \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
+            prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9
+
+          test -x "${CLANG_PREBUILT_DIR}/clang" || (echo "clang-r383902 not found"; exit 1)
+          test -x "${GCC64_DIR}/aarch64-linux-android-gcc" || (echo "aarch64 gcc not found"; exit 1)
+          test -x "${GCC32_DIR}/arm-linux-androideabi-gcc" || (echo "arm32 gcc not found"; exit 1)
+
+      - name: Export toolchain env
+        run: |
+          echo "PATH=$(pwd)/${CLANG_PREBUILT_DIR}:$(pwd)/${GCC64_DIR}:$(pwd)/${GCC32_DIR}:$PATH" >> $GITHUB_ENV
+          echo "CC=clang" >> $GITHUB_ENV
+          echo "LD=ld.lld" >> $GITHUB_ENV
+          echo "AR=llvm-ar" >> $GITHUB_ENV
+          echo "NM=llvm-nm" >> $GITHUB_ENV
+          echo "OBJCOPY=llvm-objcopy" >> $GITHUB_ENV
+          echo "OBJDUMP=llvm-objdump" >> $GITHUB_ENV
+          echo "STRIP=llvm-strip" >> $GITHUB_ENV
+
       - name: Configure kernel
         run: |
           mkdir -p out
-          make O=out ARCH=${{ env.ARCH }} ${{ env.KERNEL_DEFCONFIG }}
-
-          # Отключаем LTO и Stack Protector (часто ломают сборку старых ядер новым Clang)
-          sed -i 's/CONFIG_LTO=y/# CONFIG_LTO is not set/g' out/.config
-          sed -i 's/CONFIG_LTO_CLANG=y/# CONFIG_LTO_CLANG is not set/g' out/.config
-          sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g' out/.config
-          echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> out/.config
-
-          make O=out ARCH=${{ env.ARCH }} olddefconfig
+          make O=out ARCH=${ARCH} ${KERNEL_DEFCONFIG}
+          make O=out ARCH=${ARCH} olddefconfig
 
       - name: Build kernel
         run: |
-          make -j$(nproc) \
+          set -o pipefail
+          make -j"$(nproc)" \
             O=out \
-            ARCH=${{ env.ARCH }} \
-            SUBARCH=${{ env.SUBARCH }} \
+            ARCH=${ARCH} \
+            SUBARCH=${SUBARCH} \
             HOSTCC=gcc \
             HOSTCXX=g++ \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
+            CC=${CC} \
+            LD=${LD} \
+            AR=${AR} \
+            NM=${NM} \
+            OBJCOPY=${OBJCOPY} \
+            OBJDUMP=${OBJDUMP} \
+            STRIP=${STRIP} \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             DTC=/usr/bin/dtc \
             DTC_EXT=/usr/bin/dtc \
-            KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-unused-function" \
-            2>&1 | tee build.log
+            DTC_CPP_FLAGS="-P" \
+            Image.gz dtbs modules 2>&1 | tee build.log
 
-          # Проверяем что Image собрался
           echo "=== Build output check ==="
-          ls -la out/arch/arm64/boot/ || echo "No boot directory found!"
+          ls -la out/arch/arm64/boot/ || true
+
+          if [ ! -f out/arch/arm64/boot/Image.gz ] && [ ! -f out/arch/arm64/boot/Image ] && [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "Kernel image not found, build failed."
+            exit 1
+          fi
 
       - name: Prepare AnyKernel3 flashable zip
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel/anykernel.sh
 
-          if [ -f "out/arch/arm64/boot/Image" ]; then
-            cp out/arch/arm64/boot/Image anykernel/
-          elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
+          if [ -f "out/arch/arm64/boot/Image.gz" ]; then
             cp out/arch/arm64/boot/Image.gz anykernel/
           elif [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
             cp out/arch/arm64/boot/Image.gz-dtb anykernel/
           else
-            echo "Kernel Image not found! Build likely failed."
-            exit 1
+            cp out/arch/arm64/boot/Image anykernel/
           fi
 
-          if [ -f out/arch/arm64/boot/dtb ]; then
+          # Pack all dtb files into a single dtb blob if available
+          if find out/arch/arm64/boot/dts -type f -name "*.dtb" | grep -q .; then
+            find out/arch/arm64/boot/dts -type f -name "*.dtb" | sort | xargs cat > anykernel/dtb
+          elif [ -f out/arch/arm64/boot/dtb ]; then
             cp out/arch/arm64/boot/dtb anykernel/dtb
           fi
 
       - name: Create flashable ZIP
         run: |
           cd anykernel
-          ZIP_NAME="Kernel-OOS12-${{ env.DEVICE }}-$(date +%Y%m%d-%H%M).zip"
+          ZIP_NAME="Kernel-OOS12-${DEVICE}-$(date +%Y%m%d-%H%M).zip"
           zip -r9 "../${ZIP_NAME}" . -x "*.git*"
           echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
 
-      - name: Upload kernel zip as artifact
+      - name: Upload kernel zip artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-OOS12-${{ env.DEVICE }}
-          path: "*.zip"
+          path: ${{ env.ZIP_NAME }}
           retention-days: 7
+
+      - name: Upload build artifacts (optional)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-build-output-${{ env.DEVICE }}
+          path: |
+            out/arch/arm64/boot/Image
+            out/arch/arm64/boot/Image.gz
+            out/arch/arm64/boot/Image.gz-dtb
+            out/arch/arm64/boot/dtb
+          if-no-files-found: ignore
+          retention-days: 5
 
       - name: Upload build log on failure
         if: failure()
