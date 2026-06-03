@@ -121,8 +121,9 @@ jobs:
 
             test -x "${GCC64_DIR}/bin/aarch64-linux-android-gcc"
             test -x "${GCC32_DIR}/bin/arm-linux-androideabi-gcc"
-            "${GCC64_DIR}/bin/aarch64-linux-android-gcc" --version | head -n 1
-            "${GCC32_DIR}/bin/arm-linux-androideabi-gcc" --version | head -n 1
+
+            "${GCC64_DIR}/bin/aarch64-linux-android-gcc" --version || true
+            "${GCC32_DIR}/bin/arm-linux-androideabi-gcc" --version || true
           } 2>&1 | tee -a build.log
 
       - name: Export toolchain env
@@ -181,7 +182,7 @@ jobs:
           } 2>&1 | tee -a build.log
 
       - name: Prepare AnyKernel3 flashable zip
-        if: always()
+        if: success()
         run: |
           set -euxo pipefail
           {
@@ -206,7 +207,7 @@ jobs:
           } 2>&1 | tee -a build.log
 
       - name: Create flashable ZIP
-        if: always()
+        if: success()
         run: |
           set -euxo pipefail
           {
