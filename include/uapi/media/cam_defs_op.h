@@ -630,4 +630,16 @@ struct cam_cmd_mem_regions {
 };
 
 
+#define CAM_DUMP_REQ (CAM_COMMON_OPCODE_BASE_v2 + 0x5)
+
+struct cam_dump_req_cmd {
+    int64_t  issue_req_id;
+    int32_t  session_handle;
+    int32_t  link_hdl;
+    int32_t  dev_handle;
+    int32_t  error_type;
+    uint32_t buf_handle;
+    int32_t  offset;
+    uint32_t reserved;
+};
 #endif /* __UAPI_CAM_DEFS_H__ */
