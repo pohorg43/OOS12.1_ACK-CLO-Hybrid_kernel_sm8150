@@ -57,8 +57,8 @@ jobs:
           sudo ln -sf /usr/bin/llvm-objcopy-${{ env.CLANG_VERSION }} /usr/local/bin/llvm-objcopy
           sudo ln -sf /usr/bin/llvm-objdump-${{ env.CLANG_VERSION }} /usr/local/bin/llvm-objdump
           sudo ln -sf /usr/bin/llvm-strip-${{ env.CLANG_VERSION }} /usr/local/bin/llvm-strip
-
-      - name: Apply source patches
+          
+- name: Apply source patches
         run: |
           # 1. Фикс oplus_dc_diming.c
           if [ -f drivers/gpu/drm/msm/oplus/oplus_dc_diming.c ]; then
@@ -72,9 +72,10 @@ jobs:
           find . -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Werror[a-zA-Z0-9_=-]*//g' {} +
           find . -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Wfatal-errors[a-zA-Z0-9_=-]*//g' {} +
 
-          # 4. Фикс драйвера камеры (conflicting types for cam_context_handle_dump_dev)
+          # 4. Фикс драйвера камеры (conflicting types & incomplete definition)
           if [ -f drivers/media/platform/msm/camera/cam_core/cam_context.h ]; then
             sed -i '1i struct cam_dump_req_cmd;' drivers/media/platform/msm/camera/cam_core/cam_context.h
+            sed -i '1i #include <media/cam_req_mgr.h>' drivers/media/platform/msm/camera/cam_core/cam_context_utils.c
             echo "Applied cam_dump_req_cmd fix"
           fi
           
@@ -97,17 +98,25 @@ jobs:
             O=out \
             ARCH=${{ env.ARCH }} \
             SUBARCH=${{ env.SUBARCH }} \
+            HOSTCC=gcc \
+            HOSTCXX=g++ \
             CC=clang \
+            CPP="aarch64-linux-gnu-gcc -E" \
             LD=ld.lld \
             AR=llvm-ar \
             NM=llvm-nm \
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-unused-function" \
             2>&1 | tee build.log
+
+          # Проверяем что Image собрался
+          echo "=== Build output check ==="
+          ls -la out/arch/arm64/boot/ || echo "No boot directory found!"
 
       - name: Prepare AnyKernel3 flashable zip
         run: |
