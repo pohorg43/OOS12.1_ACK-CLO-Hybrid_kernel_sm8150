@@ -58,10 +58,13 @@ jobs:
 
       - name: Setup swap (prevent OOM)
         run: |
-          sudo fallocate -l 8G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          set -euo pipefail
+          SWAPFILE="${RUNNER_TEMP}/swapfile-${GITHUB_RUN_ID}"
+          sudo dd if=/dev/zero of="${SWAPFILE}" bs=1M count=8192 status=none
+          sudo chmod 600 "${SWAPFILE}"
+          sudo mkswap "${SWAPFILE}"
+          sudo swapon "${SWAPFILE}"
+          echo "SWAPFILE=${SWAPFILE}" | tee -a build.log
           free -h | tee -a build.log
 
       - name: Install dependencies
@@ -110,7 +113,10 @@ jobs:
       - name: Fetch AArch64 prebuilts
         run: |
           set -euo pipefail
-          if [ ! -x "${GCC64_DIR}/bin/aarch64-linux-android-gcc" ]; then
+          if [ -x "${GCC64_DIR}/bin/aarch64-linux-android-nm" ] && \
+             [ -x "${GCC64_DIR}/bin/aarch64-linux-android-objcopy" ]; then
+            echo "GCC64 found in cache, skipping clone"
+          else
             echo "GCC64 not cached, cloning..."
             GCC64_COMMIT="043dc0ad16a73e0e1973132d00fa6265ab4fa6ba"
             rm -rf "${GCC64_DIR}"
@@ -125,8 +131,6 @@ jobs:
               s="${b#aarch64-linux-android-}"
               ln -sf "$b" "${GCC64_DIR}/bin/aarch64-linux-androidkernel-${s}"
             done
-          else
-            echo "GCC64 found in cache, skipping clone"
           fi
           echo "GCC OK" | tee -a build.log
 
