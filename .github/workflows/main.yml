@@ -47,7 +47,8 @@ jobs:
             gcc-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
             gcc-arm-linux-gnueabi \
-            python3
+            python3 \
+            device-tree-compiler
 
           # Создаём симлинки для LLVM/Clang
           sudo ln -sf /usr/bin/clang-${{ env.CLANG_VERSION }}     /usr/local/bin/clang
@@ -72,21 +73,21 @@ jobs:
           find . -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Werror[a-zA-Z0-9_=-]*//g' {} +
           find . -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Wfatal-errors[a-zA-Z0-9_=-]*//g' {} +
 
-          # 4. Фикс драйвера камеры (conflicting types & incomplete definition)
+          # 4. Умный фикс драйвера камеры (ищем оригинальную структуру и подключаем её)
           if [ -f drivers/media/platform/msm/camera/cam_core/cam_context.h ]; then
-            echo "struct cam_dump_req_cmd;" > temp_hdr
-            cat drivers/media/platform/msm/camera/cam_core/cam_context.h >> temp_hdr
-            mv temp_hdr drivers/media/platform/msm/camera/cam_core/cam_context.h
-            
-            echo "#include <media/cam_req_mgr.h>" > temp_c
-            cat drivers/media/platform/msm/camera/cam_core/cam_context_utils.c >> temp_c
-            mv temp_c drivers/media/platform/msm/camera/cam_core/cam_context_utils.c
-            echo "Applied cam_dump_req_cmd fix"
+            DEF_FILE=$(grep -rl "struct cam_dump_req_cmd {" include/ drivers/media/ | head -n 1)
+            if [ -n "$DEF_FILE" ]; then
+              echo "#include \"$(pwd)/$DEF_FILE\"" > temp_hdr
+              cat drivers/media/platform/msm/camera/cam_core/cam_context.h >> temp_hdr
+              mv temp_hdr drivers/media/platform/msm/camera/cam_core/cam_context.h
+              echo "Applied cam_dump_req_cmd fix from $DEF_FILE"
+            else
+              echo "struct cam_dump_req_cmd;" > temp_hdr
+              cat drivers/media/platform/msm/camera/cam_core/cam_context.h >> temp_hdr
+              mv temp_hdr drivers/media/platform/msm/camera/cam_core/cam_context.h
+              echo "Applied cam_dump_req_cmd forward declaration"
+            fi
           fi
-          
-          # 5. Фикс для Device Tree компилятора (dtc) и Clang 14
-          # Добавляем флаг -P, чтобы препроцессор Clang не оставлял маркеры строк, которые ломают старый dtc
-          find scripts -type f -name "Makefile.*" -exec sed -i 's/-x assembler-with-cpp/-x assembler-with-cpp -P/g' {} +
           
       - name: Configure kernel
         run: |
@@ -119,6 +120,8 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            DTC=/usr/bin/dtc \
+            DTC_EXT=/usr/bin/dtc \
             KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-unused-variable -Wno-unused-function" \
             2>&1 | tee build.log
 
