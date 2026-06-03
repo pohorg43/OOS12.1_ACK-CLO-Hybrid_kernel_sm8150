@@ -161,20 +161,30 @@ jobs:
             DEFS_OP="include/uapi/media/cam_defs_op.h"
             if [ -f "$DEFS_OP" ]; then
               if ! grep -q "struct cam_dump_req_cmd" "$DEFS_OP"; then
-                sed -i '/#endif.*__UAPI_CAM_DEFS_H__/i \
-\
-#define CAM_DUMP_REQ (CAM_COMMON_OPCODE_BASE_v2 + 0x5)\
-\
-struct cam_dump_req_cmd {\
-    int64_t  issue_req_id;\
-    int32_t  session_handle;\
-    int32_t  link_hdl;\
-    int32_t  dev_handle;\
-    int32_t  error_type;\
-    uint32_t buf_handle;\
-    int32_t  offset;\
-    uint32_t reserved;\
-};' "$DEFS_OP"
+                cat > /tmp/cam_defs_insert.h <<'EOF'
+#define CAM_DUMP_REQ (CAM_COMMON_OPCODE_BASE_v2 + 0x5)
+
+struct cam_dump_req_cmd {
+    int64_t  issue_req_id;
+    int32_t  session_handle;
+    int32_t  link_hdl;
+    int32_t  dev_handle;
+    int32_t  error_type;
+    uint32_t buf_handle;
+    int32_t  offset;
+    uint32_t reserved;
+};
+EOF
+                # awk вставляет блок ПЕРЕД первой строкой с #endif ...__UAPI_CAM_DEFS_H__,
+                # сам #endif не изменяется. Это 1:1 поведение оригинального 'sed i'.
+                awk '
+                  BEGIN {
+                    while ((getline l < "/tmp/cam_defs_insert.h") > 0) ins = ins l "\n"
+                  }
+                  !done && /#endif.*__UAPI_CAM_DEFS_H__/ { printf "%s", ins; done = 1 }
+                  { print }
+                ' "$DEFS_OP" > /tmp/cam_defs_op.new
+                mv /tmp/cam_defs_op.new "$DEFS_OP"
                 echo "Patched: Added struct cam_dump_req_cmd to cam_defs_op.h"
               fi
             fi
