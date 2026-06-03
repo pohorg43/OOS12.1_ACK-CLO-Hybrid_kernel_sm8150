@@ -69,9 +69,14 @@ jobs:
           find drivers/soc/oplus -name "*.c" -exec sed -i 's/asm\/uaccess.h/linux\/uaccess.h/g' {} + 2>/dev/null || true
 
           # 3. БЕЗОПАСНОЕ удаление флагов -Werror. 
-          # [a-zA-Z0-9_=-]* удаляет только символы, допустимые во флагах компилятора, не трогая скобки ")"
           find . -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Werror[a-zA-Z0-9_=-]*//g' {} +
           find . -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Wfatal-errors[a-zA-Z0-9_=-]*//g' {} +
+
+          # 4. Фикс драйвера камеры (conflicting types for cam_context_handle_dump_dev)
+          if [ -f drivers/media/platform/msm/camera/cam_core/cam_context.h ]; then
+            sed -i '1i struct cam_dump_req_cmd;' drivers/media/platform/msm/camera/cam_core/cam_context.h
+            echo "Applied cam_dump_req_cmd fix"
+          fi
           
       - name: Configure kernel
         run: |
