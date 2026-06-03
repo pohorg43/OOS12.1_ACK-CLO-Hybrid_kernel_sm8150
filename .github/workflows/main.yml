@@ -47,26 +47,31 @@ jobs:
             echo "Build started: $(date -u)"
             echo "Runner: $(uname -a)"
             echo "Workspace: $PWD"
+            df -h
           } | tee -a build.log
 
       - name: Free disk space
         run: |
           set -euo pipefail
-          {
-            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
-            df -h
-          } 2>&1 | tee -a build.log
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h | tee -a build.log
+
+      - name: Setup swap (prevent OOM)
+        run: |
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h | tee -a build.log
 
       - name: Install dependencies
         run: |
           set -euo pipefail
-          {
-            sudo apt-get update -qq
-            sudo apt-get install -y bc bison build-essential ccache flex \
-              libelf-dev libncurses-dev libssl-dev python3 rsync zip wget curl git \
-              device-tree-compiler gcc-arm-linux-gnueabi
-            /usr/bin/dtc --version
-          } 2>&1 | tee -a build.log
+          sudo apt-get update -qq
+          sudo apt-get install -y bc bison build-essential ccache flex \
+            libelf-dev libncurses-dev libssl-dev python3 rsync zip wget curl git \
+            device-tree-compiler gcc-arm-linux-gnueabi
+          /usr/bin/dtc --version | tee -a build.log
 
       - name: Cache prebuilts
         uses: actions/cache@v4
@@ -81,170 +86,150 @@ jobs:
       - name: Fetch Clang r383902
         run: |
           set -euo pipefail
-          {
-            mkdir -p "${CLANG_DIR}"
-            if [ ! -x "${CLANG_DIR}/bin/clang" ]; then
-              TMP_TGZ="/tmp/clang-r383902.tar.gz"
-              URLS=(
-                "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902.tar.gz"
-                "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-11.0.0_r48/clang-r383902.tar.gz"
-              )
-              ok=0
-              for url in "${URLS[@]}"; do
-                echo "Trying: $url"
-                if wget -q -O "$TMP_TGZ" "$url" && file "$TMP_TGZ" | grep -q "gzip compressed"; then
-                  tar -xzf "$TMP_TGZ" -C "${CLANG_DIR}"
-                  ok=1
-                  break
-                fi
-              done
-              [ "$ok" = "1" ] || { echo "Failed to download clang-r383902"; exit 1; }
-            fi
-            "${CLANG_DIR}/bin/clang" --version
-          } 2>&1 | tee -a build.log
+          mkdir -p "${CLANG_DIR}"
+          if [ ! -x "${CLANG_DIR}/bin/clang" ]; then
+            TMP_TGZ="/tmp/clang-r383902.tar.gz"
+            URLS=(
+              "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902.tar.gz"
+              "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-11.0.0_r48/clang-r383902.tar.gz"
+              "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-11.0.0_r28/clang-r383902.tar.gz"
+            )
+            ok=0
+            for url in "${URLS[@]}"; do
+              echo "Trying: $url"
+              if wget -q --timeout=60 -O "$TMP_TGZ" "$url" && file "$TMP_TGZ" | grep -q "gzip compressed"; then
+                tar -xzf "$TMP_TGZ" -C "${CLANG_DIR}"
+                ok=1
+                break
+              fi
+            done
+            [ "$ok" = "1" ] || { echo "ERROR: Failed to download clang-r383902"; exit 1; }
+          fi
+          "${CLANG_DIR}/bin/clang" --version | tee -a build.log
 
       - name: Fetch AArch64 prebuilts
         run: |
           set -euo pipefail
-          {
+          if [ ! -x "${GCC64_DIR}/bin/aarch64-linux-android-gcc" ]; then
+            echo "GCC64 not cached, cloning..."
             GCC64_COMMIT="043dc0ad16a73e0e1973132d00fa6265ab4fa6ba"
-            mkdir -p "$(dirname "${GCC64_DIR}")"
             rm -rf "${GCC64_DIR}"
             mkdir -p "${GCC64_DIR}"
-
             git -C "${GCC64_DIR}" init
-            git -C "${GCC64_DIR}" remote add origin https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
+            git -C "${GCC64_DIR}" remote add origin \
+              https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
             git -C "${GCC64_DIR}" fetch --depth=1 origin "${GCC64_COMMIT}"
             git -C "${GCC64_DIR}" checkout -q FETCH_HEAD
-
             for f in "${GCC64_DIR}/bin/aarch64-linux-android-"*; do
               b="$(basename "$f")"
               s="${b#aarch64-linux-android-}"
               ln -sf "$b" "${GCC64_DIR}/bin/aarch64-linux-androidkernel-${s}"
             done
-          } 2>&1 | tee -a build.log
+          else
+            echo "GCC64 found in cache, skipping clone"
+          fi
+          echo "GCC OK" | tee -a build.log
 
       - name: Export toolchain paths
         run: |
           set -euo pipefail
-          {
-            CLANG_BIN="$(pwd)/${CLANG_DIR}/bin"
-            GCC64_BIN="$(pwd)/${GCC64_DIR}/bin"
-
-            echo "CLANG_BIN=${CLANG_BIN}" >> "$GITHUB_ENV"
-            echo "GCC64_BIN=${GCC64_BIN}" >> "$GITHUB_ENV"
-            echo "${CLANG_BIN}" >> "$GITHUB_PATH"
-            echo "${GCC64_BIN}" >> "$GITHUB_PATH"
-          } 2>&1 | tee -a build.log
+          CLANG_BIN="$(pwd)/${CLANG_DIR}/bin"
+          GCC64_BIN="$(pwd)/${GCC64_DIR}/bin"
+          echo "CLANG_BIN=${CLANG_BIN}" >> "$GITHUB_ENV"
+          echo "GCC64_BIN=${GCC64_BIN}" >> "$GITHUB_ENV"
+          echo "${CLANG_BIN}" >> "$GITHUB_PATH"
+          echo "${GCC64_BIN}" >> "$GITHUB_PATH"
 
       - name: Apply source patches
         run: |
           set -euo pipefail
-          {
-            echo "=== Applying source patches ==="
-
-            # Патч 4: asm/uaccess.h → linux/uaccess.h (самый массовый)
-            echo "Patching uaccess.h includes in drivers/soc/oplus..."
-            find drivers/soc/oplus -name "*.c" -exec sed -i 's|asm/uaccess.h|linux/uaccess.h|g' {} + 2>/dev/null || true
-
-            echo "All patches applied successfully"
-          } 2>&1 | tee -a build.log
+          echo "=== Patching uaccess.h includes ===" | tee -a build.log
+          find drivers/soc/oplus -name "*.c" -exec sed -i 's|asm/uaccess.h|linux/uaccess.h|g' {} + 2>/dev/null || true
+          echo "Patches applied" | tee -a build.log
 
       - name: Configure kernel
         run: |
           set -euxo pipefail
-          {
-            export PATH="${CLANG_BIN}:${GCC64_BIN}:$PATH"
-            mkdir -p out
-
-            make O=out ARCH="${ARCH}" LLVM=1 LLVM_IAS=1 \
-              CC="${CLANG_BIN}/clang" LD="${CLANG_BIN}/ld.lld" \
-              CLANG_TRIPLE=aarch64-linux-gnu- \
-              CROSS_COMPILE=aarch64-linux-androidkernel- \
-              CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-              "${KERNEL_DEFCONFIG}"
-
-            make O=out ARCH="${ARCH}" LLVM=1 LLVM_IAS=1 \
-              CC="${CLANG_BIN}/clang" LD="${CLANG_BIN}/ld.lld" \
-              CLANG_TRIPLE=aarch64-linux-gnu- \
-              CROSS_COMPILE=aarch64-linux-androidkernel- \
-              CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-              olddefconfig
-          } 2>&1 | tee -a build.log
+          export PATH="${CLANG_BIN}:${GCC64_BIN}:$PATH"
+          mkdir -p out
+          make O=out ARCH="${ARCH}" LLVM=1 LLVM_IAS=1 \
+            CC="${CLANG_BIN}/clang" LD="${CLANG_BIN}/ld.lld" \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-androidkernel- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            "${KERNEL_DEFCONFIG}" 2>&1 | tee -a build.log
+          make O=out ARCH="${ARCH}" LLVM=1 LLVM_IAS=1 \
+            CC="${CLANG_BIN}/clang" LD="${CLANG_BIN}/ld.lld" \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-androidkernel- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            olddefconfig 2>&1 | tee -a build.log
 
       - name: Build kernel
         run: |
-          set -euxo pipefail
-          {
-            export PATH="${CLANG_BIN}:${GCC64_BIN}:$PATH"
-            NUM_JOBS=$(( $(nproc) / 2 ))
-            echo "Building with ${NUM_JOBS} parallel jobs"
+          set -euo pipefail
+          export PATH="${CLANG_BIN}:${GCC64_BIN}:$PATH"
+          NUM_JOBS=$(nproc)
+          echo "Building with ${NUM_JOBS} jobs" | tee -a build.log
+          make -j"${NUM_JOBS}" O=out ARCH="${ARCH}" SUBARCH="${SUBARCH}" \
+            LLVM=1 LLVM_IAS=1 HOSTCC=gcc HOSTCXX=g++ \
+            CC="${CLANG_BIN}/clang" LD="${CLANG_BIN}/ld.lld" \
+            AR="${CLANG_BIN}/llvm-ar" NM="${CLANG_BIN}/llvm-nm" \
+            OBJCOPY="${CLANG_BIN}/llvm-objcopy" OBJDUMP="${CLANG_BIN}/llvm-objdump" \
+            STRIP="${CLANG_BIN}/llvm-strip" READELF="${CLANG_BIN}/llvm-readelf" \
+            HOSTAR="${CLANG_BIN}/llvm-ar" \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-androidkernel- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            DTC=/usr/bin/dtc DTC_EXT=/usr/bin/dtc \
+            DTC_FLAGS="-Wno-avoid_default_addr_size -Wno-interrupt_provider" \
+            Image.gz dtbs modules 2>&1 | tee -a build.log
 
-            make -j"${NUM_JOBS}" O=out ARCH="${ARCH}" SUBARCH="${SUBARCH}" \
-              LLVM=1 LLVM_IAS=1 HOSTCC=gcc HOSTCXX=g++ \
-              CC="${CLANG_BIN}/clang" LD="${CLANG_BIN}/ld.lld" \
-              AR="${CLANG_BIN}/llvm-ar" NM="${CLANG_BIN}/llvm-nm" \
-              OBJCOPY="${CLANG_BIN}/llvm-objcopy" OBJDUMP="${CLANG_BIN}/llvm-objdump" \
-              STRIP="${CLANG_BIN}/llvm-strip" READELF="${CLANG_BIN}/llvm-readelf" \
-              HOSTAR="${CLANG_BIN}/llvm-ar" \
-              CLANG_TRIPLE=aarch64-linux-gnu- \
-              CROSS_COMPILE=aarch64-linux-androidkernel- \
-              CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-              DTC=/usr/bin/dtc DTC_EXT=/usr/bin/dtc \
-              DTC_FLAGS="-Wno-avoid_default_addr_size -Wno-interrupt_provider" \
-              Image.gz dtbs modules
-
-            ls -la out/arch/arm64/boot/ || true
-          } 2>&1 | tee -a build.log
+      - name: Show build errors
+        if: failure()
+        run: |
+          echo "=== BUILD ERRORS ==="
+          grep -n "error:" build.log | head -50 || echo "No 'error:' lines found"
+          echo "=== LAST 100 LINES ==="
+          tail -100 build.log
 
       - name: Validate output
         if: success()
         run: |
           set -euo pipefail
-          {
-            if [ -f out/arch/arm64/boot/Image.gz ] || [ -f out/arch/arm64/boot/Image ] || [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-              echo "Kernel image found"
-            else
-              echo "Kernel image not found"
-              exit 1
-            fi
-          } 2>&1 | tee -a build.log
+          if [ -f out/arch/arm64/boot/Image.gz ] || \
+             [ -f out/arch/arm64/boot/Image ] || \
+             [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "Kernel image found" | tee -a build.log
+          else
+            echo "ERROR: Kernel image not found" | tee -a build.log
+            exit 1
+          fi
 
       - name: Prepare AnyKernel3
         if: success()
         run: |
           set -euo pipefail
-          {
-            git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
-            sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel/anykernel.sh
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel/anykernel.sh
+          if [ -f out/arch/arm64/boot/Image.gz ]; then
+            cp out/arch/arm64/boot/Image.gz anykernel/
+          elif [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp out/arch/arm64/boot/Image.gz-dtb anykernel/
+          else
+            cp out/arch/arm64/boot/Image anykernel/
+          fi
+          if find out/arch/arm64/boot/dts -type f -name "*.dtb" 2>/dev/null | grep -q .; then
+            find out/arch/arm64/boot/dts -type f -name "*.dtb" | sort | xargs cat > anykernel/dtb
+          elif [ -f out/arch/arm64/boot/dtb ]; then
+            cp out/arch/arm64/boot/dtb anykernel/dtb
+          fi
+          cd anykernel
+          ZIP_NAME="Kernel-OOS12-${DEVICE}-$(date +%Y%m%d-%H%M).zip"
+          zip -r9 "../${ZIP_NAME}" . -x "*.git*"
+          echo "ZIP_NAME=${ZIP_NAME}" >> "$GITHUB_ENV"
 
-            if [ -f out/arch/arm64/boot/Image.gz ]; then
-              cp out/arch/arm64/boot/Image.gz anykernel/
-            elif [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-              cp out/arch/arm64/boot/Image.gz-dtb anykernel/
-            else
-              cp out/arch/arm64/boot/Image anykernel/
-            fi
-
-            if find out/arch/arm64/boot/dts -type f -name "*.dtb" 2>/dev/null | grep -q .; then
-              find out/arch/arm64/boot/dts -type f -name "*.dtb" | sort | xargs cat > anykernel/dtb
-            elif [ -f out/arch/arm64/boot/dtb ]; then
-              cp out/arch/arm64/boot/dtb anykernel/dtb
-            fi
-          } 2>&1 | tee -a build.log
-
-      - name: Create flashable ZIP
-        if: success()
-        run: |
-          set -euo pipefail
-          {
-            cd anykernel
-            ZIP_NAME="Kernel-OOS12-${DEVICE}-$(date +%Y%m%d-%H%M).zip"
-            zip -r9 "../${ZIP_NAME}" . -x "*.git*"
-            echo "ZIP_NAME=${ZIP_NAME}" >> "$GITHUB_ENV"
-          } 2>&1 | tee -a build.log
-
-      - name: Upload kernel zip artifact
+      - name: Upload kernel ZIP
         if: success()
         uses: actions/upload-artifact@v4
         with:
