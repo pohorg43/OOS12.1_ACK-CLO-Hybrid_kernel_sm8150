@@ -68,11 +68,11 @@ jobs:
           # 2. Фикс uaccess.h
           find drivers/soc/oplus -name "*.c" -exec sed -i 's/asm\/uaccess.h/linux\/uaccess.h/g' {} + 2>/dev/null || true
 
-          # 3. БРОНЕБОЙНОЕ удаление флагов -Werror. 
-          # [^ ]* удаляет всё слово целиком до следующего пробела.
-          find . -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Werror[^ ]*//g' {} +
-          find . -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Wfatal-errors[^ ]*//g' {} +
-
+          # 3. БЕЗОПАСНОЕ удаление флагов -Werror. 
+          # [a-zA-Z0-9_=-]* удаляет только символы, допустимые во флагах компилятора, не трогая скобки ")"
+          find . -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Werror[a-zA-Z0-9_=-]*//g' {} +
+          find . -type f \( -name "Makefile" -o -name "*.mk" -o -name "Kbuild" \) -exec sed -i 's/-Wfatal-errors[a-zA-Z0-9_=-]*//g' {} +
+          
       - name: Configure kernel
         run: |
           mkdir -p out
