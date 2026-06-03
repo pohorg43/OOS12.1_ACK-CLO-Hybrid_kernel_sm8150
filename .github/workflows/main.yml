@@ -74,18 +74,18 @@ jobs:
 
           # 4. Фикс драйвера камеры (conflicting types & incomplete definition)
           if [ -f drivers/media/platform/msm/camera/cam_core/cam_context.h ]; then
-            # Добавляем struct cam_dump_req_cmd; в начало .h файла
             echo "struct cam_dump_req_cmd;" > temp_hdr
             cat drivers/media/platform/msm/camera/cam_core/cam_context.h >> temp_hdr
             mv temp_hdr drivers/media/platform/msm/camera/cam_core/cam_context.h
             
-            # Добавляем #include <media/cam_req_mgr.h> в начало .c файла
             echo "#include <media/cam_req_mgr.h>" > temp_c
             cat drivers/media/platform/msm/camera/cam_core/cam_context_utils.c >> temp_c
             mv temp_c drivers/media/platform/msm/camera/cam_core/cam_context_utils.c
-            
             echo "Applied cam_dump_req_cmd fix"
           fi
+          
+          # 5. Убираем флаг -Qunused-arguments, чтобы GCC не падал при работе в качестве препроцессора
+          find . -type f -name "Makefile" -exec sed -i 's/-Qunused-arguments//g' {} +
           
       - name: Configure kernel
         run: |
