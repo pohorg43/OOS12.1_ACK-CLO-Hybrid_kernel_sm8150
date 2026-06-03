@@ -30,7 +30,6 @@ jobs:
 
       CLANG_DIR: prebuilts-master/clang/host/linux-x86/clang-r383902
       GCC64_DIR: prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
-      GCC32_DIR: prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9
 
     defaults:
       run:
@@ -60,7 +59,8 @@ jobs:
               bc bison build-essential ccache flex \
               libelf-dev libncurses-dev libssl-dev \
               python3 rsync zip wget curl git \
-              device-tree-compiler
+              device-tree-compiler \
+              gcc-arm-linux-gnueabi
             /usr/bin/dtc --version || true
           } 2>&1 | tee -a build.log
 
@@ -70,17 +70,15 @@ jobs:
           path: |
             prebuilts-master/clang/host/linux-x86/clang-r383902
             prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
-            prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9
-          key: prebuilts-clang-r383902-gcc49-v4
+          key: prebuilts-clang-r383902-gcc64-v1
           restore-keys: |
-            prebuilts-clang-r383902-gcc49-
+            prebuilts-clang-r383902-gcc64-
 
       - name: Fetch Clang r383902
         run: |
           set -euxo pipefail
           {
             mkdir -p "${CLANG_DIR}"
-
             if [ ! -x "${CLANG_DIR}/bin/clang" ]; then
               TMP_TGZ="/tmp/clang-r383902.tar.gz"
               URLS=(
@@ -98,48 +96,41 @@ jobs:
                   break
                 fi
               done
-
               [ "$ok" = "1" ] || { echo "Failed to download clang-r383902"; exit 1; }
             fi
 
             test -x "${CLANG_DIR}/bin/clang"
             "${CLANG_DIR}/bin/clang" --version
           } 2>&1 | tee -a build.log
-      - name: Fetch GCC prebuilts
+
+      - name: Fetch AArch64 prebuilt binutils/gcc tree
         run: |
           set -euxo pipefail
           {
-            mkdir -p "$(dirname "${GCC64_DIR}")" "$(dirname "${GCC32_DIR}")"
+            mkdir -p "$(dirname "${GCC64_DIR}")"
 
             GCC64_COMMIT="043dc0ad16a73e0e1973132d00fa6265ab4fa6ba"
-            GCC32_COMMIT="5ac02a0ba9f39591758bab4516dd0725747af0c3"
-
-            rm -rf "${GCC64_DIR}" "${GCC32_DIR}"
-            mkdir -p "${GCC64_DIR}" "${GCC32_DIR}"
+            rm -rf "${GCC64_DIR}"
+            mkdir -p "${GCC64_DIR}"
 
             git -C "${GCC64_DIR}" init
             git -C "${GCC64_DIR}" remote add origin https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
             git -C "${GCC64_DIR}" fetch --depth=1 origin "${GCC64_COMMIT}"
             git -C "${GCC64_DIR}" checkout -q FETCH_HEAD
 
-            git -C "${GCC32_DIR}" init
-            git -C "${GCC32_DIR}" remote add origin https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9
-            git -C "${GCC32_DIR}" fetch --depth=1 origin "${GCC32_COMMIT}"
-            git -C "${GCC32_DIR}" checkout -q FETCH_HEAD
+            ls -la "${GCC64_DIR}/bin" | sed -n '1,40p'
 
-            ls -la "${GCC64_DIR}/bin" | sed -n '1,20p'
-            ls -la "${GCC32_DIR}/bin" | sed -n '1,20p'
+            test -x "${GCC64_DIR}/bin/aarch64-linux-android-nm"
+            test -x "${GCC64_DIR}/bin/aarch64-linux-android-objcopy"
+            test -x "${GCC64_DIR}/bin/aarch64-linux-android-ld" || test -x "${GCC64_DIR}/bin/aarch64-linux-android-ld.bfd"
 
-            test -x "${GCC64_DIR}/bin/aarch64-linux-android-gcc"
-            test -x "${GCC32_DIR}/bin/arm-linux-androideabi-gcc"
-
-            for t in gcc g++ cpp ar as ld nm objcopy objdump ranlib strip; do
-              if [ -e "${GCC64_DIR}/bin/aarch64-linux-android-${t}" ] && [ ! -e "${GCC64_DIR}/bin/aarch64-linux-androidkernel-${t}" ]; then
-                ln -sf "aarch64-linux-android-${t}" "${GCC64_DIR}/bin/aarch64-linux-androidkernel-${t}"
-              fi
+            for f in "${GCC64_DIR}/bin/aarch64-linux-android-"*; do
+              b="$(basename "$f")"
+              s="${b#aarch64-linux-android-}"
+              ln -sf "$b" "${GCC64_DIR}/bin/aarch64-linux-androidkernel-${s}"
             done
 
-            test -x "${GCC64_DIR}/bin/aarch64-linux-androidkernel-gcc"
+            test -x "${GCC64_DIR}/bin/aarch64-linux-androidkernel-nm"
           } 2>&1 | tee -a build.log
 
       - name: Export toolchain env
@@ -148,7 +139,6 @@ jobs:
           {
             echo "${CLANG_DIR}/bin" >> "$GITHUB_PATH"
             echo "${GCC64_DIR}/bin" >> "$GITHUB_PATH"
-            echo "${GCC32_DIR}/bin" >> "$GITHUB_PATH"
 
             echo "CC=clang" >> "$GITHUB_ENV"
             echo "LD=ld.lld" >> "$GITHUB_ENV"
@@ -176,6 +166,7 @@ jobs:
               O=out \
               ARCH="${ARCH}" \
               SUBARCH="${SUBARCH}" \
+              LLVM=1 LLVM_IAS=1 \
               HOSTCC=gcc \
               HOSTCXX=g++ \
               CC=clang \
@@ -187,7 +178,7 @@ jobs:
               STRIP=llvm-strip \
               CLANG_TRIPLE=aarch64-linux-gnu- \
               CROSS_COMPILE=aarch64-linux-androidkernel- \
-              CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+              CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
               DTC=/usr/bin/dtc \
               DTC_EXT=/usr/bin/dtc \
               DTC_CPP_FLAGS="-P" \
@@ -197,20 +188,20 @@ jobs:
             ls -la out/arch/arm64/boot/ || true
           } 2>&1 | tee -a build.log
 
-      - name: Validate build outputs
+      - name: Validate output
         if: success()
         run: |
           set -euxo pipefail
           {
             if [ -f out/arch/arm64/boot/Image.gz ] || [ -f out/arch/arm64/boot/Image ] || [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-              echo "Kernel image found."
+              echo "Kernel image found"
             else
-              echo "Kernel image not found."
+              echo "Kernel image not found"
               exit 1
             fi
           } 2>&1 | tee -a build.log
 
-      - name: Prepare AnyKernel3 flashable zip
+      - name: Prepare AnyKernel3
         if: success()
         run: |
           set -euxo pipefail
