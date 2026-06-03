@@ -293,4 +293,8 @@ struct cam_isp_hw_dump_header {
 	uint64_t  size;
 	uint32_t  word_size;
 };
+struct cam_isp_sensor_dimension {
+    uint32_t width;
+    uint32_t height;
+};
 #endif /* _CAM_ISP_HW_H_ */
