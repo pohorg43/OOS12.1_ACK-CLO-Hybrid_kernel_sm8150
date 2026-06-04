@@ -642,4 +642,19 @@ struct cam_dump_req_cmd {
     int32_t  offset;
     uint32_t reserved;
 };
+#define CAM_OEM_RW_SIZE_MAX            0xFFFF
+#define CAM_OEM_RW_REG                 (CAM_COMMON_OPCODE_BASE + 0x100)
+#define CAM_OEM_GET_ID                  (CAM_COMMON_OPCODE_BASE + 0x101)
+#define CAM_OEM_CMD_READ_DEV            (CAM_COMMON_OPCODE_BASE + 0x102)
+#define CAM_OEM_CMD_WRITE_DEV           (CAM_COMMON_OPCODE_BASE + 0x103)
+
+struct cam_oem_rw_ctl {
+    uint32_t    opcode;
+    uint32_t    reserved;
+    uint64_t    addr;
+    uint32_t    count;
+    uint32_t    size;
+    int         buf_handle;
+    uint32_t    reserved1;
+};
 #endif /* __UAPI_CAM_DEFS_H__ */
