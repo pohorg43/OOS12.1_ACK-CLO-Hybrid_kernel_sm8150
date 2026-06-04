@@ -3,12 +3,8 @@ name: Build Kernel (OOS12.1 - sm8150)
 on:
   push:
     branches: [ "thirteen" ]
-    paths:
-      - '.github/workflows/build.yml'
   pull_request:
-    branches: [ "thirteen" ]
-    paths:
-      - '.github/workflows/build.yml'
+    branches: [ "thirteen"]
   workflow_dispatch:
 
 concurrency:
