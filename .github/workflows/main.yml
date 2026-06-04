@@ -10,7 +10,7 @@ on:
       device:
         description: "Target device label for artifact name"
         required: true
-        default: "OnePlus7T"
+        default: "OnePlus7Pro"
         type: choice
         options:
           - OnePlus7T
@@ -55,14 +55,6 @@ jobs:
           set -euo pipefail
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
           df -h | tee -a build.log
-
-      - name: Setup swap (prevent OOM)
-        run: |
-          sudo fallocate -l 8G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          free -h | tee -a build.log
 
       - name: Install dependencies
         run: |
