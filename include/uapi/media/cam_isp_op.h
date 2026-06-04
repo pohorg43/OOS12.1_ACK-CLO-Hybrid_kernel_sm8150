@@ -532,4 +532,5 @@ struct cam_isp_sensor_config {
 	struct cam_isp_sensor_dimension ipp_path;
 	struct cam_isp_sensor_dimension rdi_path[4];
 	uint32_t num_rdi;
+} __attribute__((packed));
 #endif /* __UAPI_CAM_ISP_H__ */
