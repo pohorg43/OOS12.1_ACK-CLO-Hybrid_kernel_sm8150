@@ -520,5 +520,16 @@ struct cam_fps_config {
 struct cam_isp_init_frame_drop_config {
 	uint32_t                       init_frame_drop;
 } __attribute__((packed));
+/* OnePlus OEM — sensor dimension config blob */
+struct cam_isp_sensor_dimension {
+	uint32_t width;
+    uint32_t height;
+	uint32_t measure_enabled;
+} __attribute__((packed));
 
+struct cam_isp_sensor_config {
+	struct cam_isp_sensor_dimension ppp_path;
+	struct cam_isp_sensor_dimension ipp_path;
+	struct cam_isp_sensor_dimension rdi_path[4];
+	uint32_t num_rdi;
 #endif /* __UAPI_CAM_ISP_H__ */
