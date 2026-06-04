@@ -453,4 +453,5 @@ struct cam_req_mgr_message {
 		struct cam_req_mgr_frame_msg frame_msg;
 	} u;
 };
+#define CAM_REQ_MGR_REQUEST_DUMP  (CAM_COMMON_OPCODE_BASE + 0x16)
 #endif /* __UAPI_LINUX_CAM_REQ_MGR_H */
