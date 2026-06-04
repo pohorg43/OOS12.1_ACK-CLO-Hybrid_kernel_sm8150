@@ -58,13 +58,10 @@ jobs:
 
       - name: Setup swap (prevent OOM)
         run: |
-          set -euo pipefail
-          SWAPFILE="${RUNNER_TEMP}/swapfile-${GITHUB_RUN_ID}"
-          sudo dd if=/dev/zero of="${SWAPFILE}" bs=1M count=8192 status=none
-          sudo chmod 600 "${SWAPFILE}"
-          sudo mkswap "${SWAPFILE}"
-          sudo swapon "${SWAPFILE}"
-          echo "SWAPFILE=${SWAPFILE}" | tee -a build.log
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
           free -h | tee -a build.log
 
       - name: Install dependencies
@@ -113,13 +110,9 @@ jobs:
       - name: Fetch AArch64 prebuilts
         run: |
           set -euo pipefail
-          if [ -x "${GCC64_DIR}/bin/aarch64-linux-android-nm" ] && \
-             [ -x "${GCC64_DIR}/bin/aarch64-linux-android-objcopy" ]; then
-            echo "GCC64 found in cache, skipping clone"
-          else
+          if [ ! -x "${GCC64_DIR}/bin/aarch64-linux-android-gcc" ]; then
             echo "GCC64 not cached, cloning..."
             GCC64_COMMIT="043dc0ad16a73e0e1973132d00fa6265ab4fa6ba"
-            rm -rf "${GCC64_DIR}"
             mkdir -p "${GCC64_DIR}"
             git -C "${GCC64_DIR}" init
             git -C "${GCC64_DIR}" remote add origin \
@@ -131,6 +124,8 @@ jobs:
               s="${b#aarch64-linux-android-}"
               ln -sf "$b" "${GCC64_DIR}/bin/aarch64-linux-androidkernel-${s}"
             done
+          else
+            echo "GCC64 found in cache, skipping clone"
           fi
           echo "GCC OK" | tee -a build.log
 
@@ -175,7 +170,7 @@ jobs:
           export PATH="${CLANG_BIN}:${GCC64_BIN}:$PATH"
           NUM_JOBS=$(nproc)
           echo "Building with ${NUM_JOBS} jobs" | tee -a build.log
-          make -j"${NUM_JOBS}" O=out ARCH="${ARCH}" SUBARCH="${SUBARCH}" \
+          make -k -j"${NUM_JOBS}" O=out ARCH="${ARCH}" SUBARCH="${SUBARCH}" \
             LLVM=1 LLVM_IAS=1 HOSTCC=gcc HOSTCXX=g++ \
             CC="${CLANG_BIN}/clang" LD="${CLANG_BIN}/ld.lld" \
             AR="${CLANG_BIN}/llvm-ar" NM="${CLANG_BIN}/llvm-nm" \
@@ -185,6 +180,7 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-androidkernel- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            KCFLAGS="-ferror-limit=0" \
             DTC=/usr/bin/dtc DTC_EXT=/usr/bin/dtc \
             DTC_FLAGS="-Wno-avoid_default_addr_size -Wno-interrupt_provider" \
             Image.gz dtbs modules 2>&1 | tee -a build.log
@@ -193,9 +189,9 @@ jobs:
         if: failure()
         run: |
           echo "=== BUILD ERRORS ==="
-          grep -n "error:" build.log | head -50 || echo "No 'error:' lines found"
+          grep -n "error:" build.log | head -200 || echo "No 'error:' lines found"
           echo "=== LAST 100 LINES ==="
-          tail -100 build.log
+          tail -300 build.log
 
       - name: Validate output
         if: success()
