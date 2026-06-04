@@ -675,7 +675,7 @@ struct cam_dump_req_cmd {
 	uint32_t       reserved;
 };
 
-#ifdef VENDOR_EDIT
+#ifndef VENDOR_EDIT
 #define CAM_OEM_COMMON_OPCODE_BASE                  0x8000
 
 #define CAM_OEM_RW_SIZE_MAX        128
